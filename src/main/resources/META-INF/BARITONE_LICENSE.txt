@@ -1,0 +1,29 @@
+GNU LESSER GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+Everyone is permitted to copy and distribute verbatim copies
+of this license document, but changing it is not allowed.
+
+This version of the GNU Lesser General Public License incorporates
+the terms and conditions of version 3 of the GNU General Public
+License, supplemented by the additional permissions listed below.
+
+======================================================================
+BARITONE NOTICES & ATTRIBUTIONS
+======================================================================
+This software contains algorithmic concepts and pathfinding graph
+techniques adapted from the Baritone open-source project.
+Original Baritone source code: https://github.com/cabaletta/baritone
+Copyright (c) 2018-2023 leijurv, cabaletta, Brady, and Baritone contributors.
+
+Modifications and adaptation for autonomous server-side CompanionEntity
+navigation in Esclavo (Minecraft Java 1.20.1 / Forge 47.3.0)
+Copyright (c) 2026 Gilicod / Esclavo Project.
+
+The original Baritone project is licensed under the LGPL v3.0.
+In compliance with LGPL v3.0:
+1. The adapted algorithmic planning components are isolated in
+   the package `com.aicompanion.internal.baritone`.
+2. No proprietary restrictions are placed on these components.
+3. This license notice and attribution is preserved and distributed.

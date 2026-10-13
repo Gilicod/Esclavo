@@ -1,0 +1,15 @@
+build/
+bin/
+.gradle/
+run/
+out/
+.idea/
+.vscode/
+*.ipr
+*.iws
+*.iml
+logs/
+esclavo-logs/
+config/
+net/
+patches/
