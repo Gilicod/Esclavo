@@ -44,30 +44,34 @@ public class CompanionWhistleItem extends Item {
 
                 CompanionEntity companion = CompanionManager.getCompanionForOwner(serverLevel.getServer(), serverPlayer.getUUID());
                 if (companion != null && companion.isAlive()) {
-                    boolean alreadyAuth = companion.isChestAuthorized(pos, level);
-                    if (alreadyAuth) {
+                    var existingEntry = companion.getAuthorizedChestAt(pos, level);
+                    if (existingEntry != null) {
+                        String oldLabel = existingEntry.getFullLabel();
                         companion.unauthorizeChest(pos, level.dimension().location());
+                        companion.syncToOwner();
                         serverPlayer.sendSystemMessage(
                                 Component.literal("[" + companion.getCustomCompanionName() + "] ")
                                         .withStyle(ChatFormatting.GOLD)
-                                        .append(Component.literal("Cofre en " + pos.toShortString() + " DESAUTORIZADO.").withStyle(ChatFormatting.YELLOW))
+                                        .append(Component.literal(oldLabel + " en " + pos.toShortString() + " DESAUTORIZADO.").withStyle(ChatFormatting.YELLOW))
                         );
                     } else {
-                        companion.authorizeChest(pos, level.dimension().location(), serverPlayer.getUUID());
+                        var created = companion.authorizeChestWithEntry(pos, level.dimension().location(), serverPlayer.getUUID());
+                        String label = created != null ? created.getFullLabel() : ("Cofre en " + pos.toShortString());
                         if (serverPlayer.isShiftKeyDown()) {
                             companion.setHomePos(pos, level.dimension());
                             serverPlayer.sendSystemMessage(
                                     Component.literal("[" + companion.getCustomCompanionName() + "] ")
                                             .withStyle(ChatFormatting.GOLD)
-                                            .append(Component.literal("¡Cofre en " + pos.toShortString() + " AUTORIZADO y marcado como ALMACÉN PRINCIPAL!").withStyle(ChatFormatting.GREEN))
+                                            .append(Component.literal("¡" + label + " en " + pos.toShortString() + " AUTORIZADO y marcado como ALMACÉN PRINCIPAL (★)!").withStyle(ChatFormatting.GREEN))
                             );
                         } else {
                             serverPlayer.sendSystemMessage(
                                     Component.literal("[" + companion.getCustomCompanionName() + "] ")
                                             .withStyle(ChatFormatting.GOLD)
-                                            .append(Component.literal("¡Cofre en " + pos.toShortString() + " AUTORIZADO! Ahora puede ser usado para guardar o abastecer.").withStyle(ChatFormatting.GREEN))
+                                            .append(Component.literal("¡" + label + " en " + pos.toShortString() + " AUTORIZADO! Puedes configurarlo en la pestaña BAÚLES.").withStyle(ChatFormatting.GREEN))
                             );
                         }
+                        companion.syncToOwner();
                     }
                     return net.minecraft.world.InteractionResult.SUCCESS;
                 }

@@ -353,6 +353,8 @@ public class CompanionMenu extends AbstractContainerMenu {
                     settings.isEnableChunkLoading()
             );
 
+            companion.populateExtendedSyncData(packet);
+
             CompanionNetworking.CHANNEL.sendTo(packet, player.connection.connection, net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT);
         } catch (Exception e) {
             // Never crash menu on data sync error

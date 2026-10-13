@@ -53,14 +53,29 @@ public class EsclabTabButton extends Button {
             guiGraphics.fill(x + w - 3, y + h - 3, x + w - 1, y + h - 1, 0xFFFFE580);
         }
 
-        // Draw bracketed text: e.g. [ INVENTARIO ]
+        // Draw bracketed text: e.g. [INVENTARIO], auto-fitting if button is compact
         Font font = Minecraft.getInstance().font;
         String rawText = this.getMessage().getString();
         String display = rawText.startsWith("[") ? rawText : "[" + rawText + "]";
+        if (font.width(display) > w - 4) {
+            display = rawText;
+        }
 
         int textColor = activeTab ? 0xFFFFD700 : (hovered ? 0xFFFFFFFF : 0xFFB0C0D4);
-        int textX = x + (w - font.width(display)) / 2;
+        int textWidth = font.width(display);
         int textY = y + (h - font.lineHeight) / 2 + 1;
-        guiGraphics.drawString(font, display, textX, textY, textColor, false);
+        if (textWidth > w - 4 && textWidth > 0) {
+            float scale = (float) (w - 4) / (float) textWidth;
+            guiGraphics.pose().pushPose();
+            float cx = x + w / 2.0f;
+            float cy = y + h / 2.0f;
+            guiGraphics.pose().translate(cx, cy, 0);
+            guiGraphics.pose().scale(scale, scale, 1.0f);
+            guiGraphics.drawString(font, display, -textWidth / 2, -font.lineHeight / 2 + 1, textColor, false);
+            guiGraphics.pose().popPose();
+        } else {
+            int textX = x + (w - textWidth) / 2;
+            guiGraphics.drawString(font, display, textX, textY, textColor, false);
+        }
     }
 }

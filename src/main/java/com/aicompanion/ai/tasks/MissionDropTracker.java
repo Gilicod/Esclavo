@@ -130,23 +130,36 @@ public class MissionDropTracker {
 
     /**
      * Raycasts line-of-sight between companion's eyes and the drop to prevent picking up items
-     * through solid walls/obstructions.
+     * through solid walls/obstructions, while ignoring tree leaves and non-solid foliage.
      */
     public static boolean hasLineOfSightToDrop(CompanionEntity companion, ItemEntity item) {
         if (companion == null || item == null || !(companion.level() instanceof ServerLevel level)) return false;
-        Vec3 eyePos = companion.getEyePosition();
-        Vec3 dropPos = item.position().add(0, 0.25, 0);
-        BlockHitResult hit = level.clip(new ClipContext(
-                eyePos, dropPos,
-                ClipContext.Block.COLLIDER,
-                ClipContext.Fluid.NONE,
-                companion
-        ));
-        if (hit.getType() == HitResult.Type.MISS) {
+        if (companion.getBoundingBox().inflate(1.25, 1.15, 1.25).intersects(item.getBoundingBox())) {
             return true;
         }
-        BlockPos hitPos = hit.getBlockPos();
-        return hitPos.equals(item.blockPosition()) || hitPos.equals(item.blockPosition().below());
+        Vec3 dropPos = item.position().add(0, 0.25, 0);
+        for (Vec3 origin : new Vec3[]{companion.getEyePosition(), companion.position().add(0, 0.85, 0)}) {
+            BlockHitResult hit = level.clip(new ClipContext(
+                    origin, dropPos,
+                    ClipContext.Block.COLLIDER,
+                    ClipContext.Fluid.NONE,
+                    companion
+            ));
+            if (hit.getType() == HitResult.Type.MISS) {
+                return true;
+            }
+            BlockPos hitPos = hit.getBlockPos();
+            if (hitPos.equals(item.blockPosition())
+                    || hitPos.equals(item.blockPosition().below())
+                    || hitPos.distManhattan(item.blockPosition()) <= 1) {
+                return true;
+            }
+            BlockState hitState = level.getBlockState(hitPos);
+            if (hitState.is(net.minecraft.tags.BlockTags.LEAVES) || !hitState.isSolidRender(level, hitPos)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Vanilla-like pickup reach: player pickup box is the bounding box inflated by (1.5, 1.2, 1.5) with line-of-sight check. */
@@ -350,7 +363,13 @@ public class MissionDropTracker {
         if (blocked && clearObstaclesTowardsDrop(companion, level, activeTarget)) {
             return DropCollectionResult.MOVING_TO_DROP;
         }
-        if (companion.getNavManager().isDone() || collectionTicks % 10 == 0) {
+        if (companion.getNavManager().isDone()) {
+            if (companion.blockPosition().distSqr(activeTarget.blockPosition()) <= 3.0) {
+                companion.getMoveControl().setWantedPosition(activeTarget.getX(), activeTarget.getY(), activeTarget.getZ(), 1.15);
+            } else {
+                companion.getNavManager().navigateTo(new GoalNear(activeTarget.blockPosition(), 1), MovementPolicy.sprint());
+            }
+        } else if (collectionTicks % 20 == 0) {
             companion.getNavManager().navigateTo(new GoalNear(activeTarget.blockPosition(), 1), MovementPolicy.sprint());
         }
         return DropCollectionResult.MOVING_TO_DROP;

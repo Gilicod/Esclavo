@@ -16,6 +16,7 @@
     "gui.aicompanion.tab.orders": "ORDERS",
     "gui.aicompanion.tab.queue": "QUEUE",
     "gui.aicompanion.tab.build": "BUILDING",
+    "gui.aicompanion.tab.chests": "CHESTS",
     "gui.aicompanion.tab.ai": "AI",
     "gui.aicompanion.tab.memory": "MEMORY",
     "gui.aicompanion.tab.stats": "STATS",

@@ -481,6 +481,17 @@ public class CompanionBrain {
         return net.minecraft.core.Direction.getNearest(dx, 0.0, dz);
     }
 
+    public int getDangerZoneCount() {
+        if (dangerZones.isEmpty()) return 0;
+        long now = companion.level() != null ? companion.level().getGameTime() : 0L;
+        dangerZones.removeIf(z -> z.expiresAt < now);
+        return dangerZones.size();
+    }
+
+    public void clearDangerZones() {
+        dangerZones.clear();
+    }
+
     public void executeNaturalOrder(String text) {
         this.lastUserOrderText = text != null ? text.trim() : "";
         com.aicompanion.AICompanionMod.LOGGER.info("[ESCLAVO-DEBUG] executeNaturalOrder: text='{}'", text);

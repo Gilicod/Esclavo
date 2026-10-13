@@ -21,39 +21,70 @@ public class WithdrawTask extends CompanionTask {
 
     public WithdrawTask(CompanionEntity companion, BlockPos chestPos, ResourceLocation itemId, int amount) {
         super(companion);
-        this.chestPos = chestPos != null ? chestPos : companion.getHomePos();
+        this.chestPos = (chestPos != null && companion != null && companion.isChestAuthorized(chestPos, companion.level())) ? chestPos : null;
         this.itemId = itemId;
         this.amount = amount;
     }
 
     public WithdrawTask(CompanionEntity companion, ResourceLocation itemId, int amount) {
-        this(companion, companion.getHomePos(), itemId, amount);
+        this(companion, null, itemId, amount);
+    }
+
+    private BlockPos findAuthorizedChestWithItem() {
+        if (companion == null || companion.level() == null) return null;
+        Item targetItem = itemId != null ? BuiltInRegistries.ITEM.get(itemId) : null;
+        ResourceLocation dim = companion.level().dimension().location();
+        BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (var entry : companion.getAuthorizedChestEntries()) {
+            if (!entry.getDimension().equals(dim)) continue;
+            BlockEntity be = companion.level().getBlockEntity(entry.getPos());
+            if (be == null) continue;
+            var cap = be.getCapability(ForgeCapabilities.ITEM_HANDLER);
+            if (!cap.isPresent()) continue;
+            var handler = cap.orElse(null);
+            if (handler == null) continue;
+            boolean hasItem = (targetItem == null);
+            if (targetItem != null) {
+                for (int i = 0; i < handler.getSlots(); i++) {
+                    ItemStack s = handler.getStackInSlot(i);
+                    if (!s.isEmpty() && s.is(targetItem)) {
+                        hasItem = true;
+                        break;
+                    }
+                }
+            }
+            if (hasItem) {
+                double d = companion.blockPosition().distSqr(entry.getPos());
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = entry.getPos();
+                }
+            }
+        }
+        if (best != null) return best;
+        return companion.getNearestAuthorizedChest(companion.blockPosition(), companion.level(), 64.0).orElse(null);
     }
 
     @Override
     public void start() {
         companion.setCurrentState(CompanionState.WITHDRAWING);
+        if (chestPos == null || !companion.isChestAuthorized(chestPos, companion.level())) {
+            chestPos = findAuthorizedChestWithItem();
+        }
     }
 
     @Override
     public void tick() {
         if (paused) return;
 
-        if (chestPos == null) {
-            var nearest = companion.getNearestAuthorizedChest(companion.blockPosition(), companion.level(), 48.0);
-            if (nearest.isPresent()) {
-                chestPos = nearest.get();
-            } else {
-                companion.tellOwner("No tengo ningún cofre autorizado en esta dimensión para retirar objetos. Usa el Silbato en un cofre para autorizarlo.");
+        if (chestPos == null || !companion.isChestAuthorized(chestPos, companion.level())) {
+            chestPos = findAuthorizedChestWithItem();
+            if (chestPos == null) {
+                companion.tellOwner("No tengo ningún baúl autorizado cercano con " + (itemId != null ? itemId.getPath() : "esos objetos") + ".");
                 complete = true;
                 return;
             }
-        }
-
-        if (!companion.isChestAuthorized(chestPos, companion.level())) {
-            companion.tellOwner("El cofre en " + chestPos.toShortString() + " no está autorizado.");
-            complete = true;
-            return;
         }
 
         double distSq = companion.blockPosition().distSqr(chestPos);

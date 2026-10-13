@@ -3,6 +3,65 @@ package com.aicompanion.entity;
 import net.minecraft.nbt.CompoundTag;
 
 public class CompanionSettings {
+
+    public enum FoodStoragePolicy {
+        RESERVE_16_STORE_REST("Reservar 16 y guardar resto en Baúl", 16),
+        STORE_ALL_FOOD("Guardar toda en Baúl (reservar 4)", 4),
+        DELIVER_TO_OWNER("Entregar excedente al propietario", 16),
+        KEEP_IN_INVENTORY("Conservar toda en mochila", 2304);
+
+        private final String displayName;
+        private final int reserveLimit;
+
+        FoodStoragePolicy(String displayName, int reserveLimit) {
+            this.displayName = displayName;
+            this.reserveLimit = reserveLimit;
+        }
+
+        public String getDisplayName() { return displayName; }
+        public int getReserveLimit() { return reserveLimit; }
+
+        public FoodStoragePolicy next() {
+            FoodStoragePolicy[] vals = values();
+            return vals[(this.ordinal() + 1) % vals.length];
+        }
+
+        public static FoodStoragePolicy fromName(String name) {
+            if (name == null) return RESERVE_16_STORE_REST;
+            for (FoodStoragePolicy p : values()) {
+                if (p.name().equalsIgnoreCase(name)) return p;
+            }
+            return RESERVE_16_STORE_REST;
+        }
+    }
+
+    public enum AutoDepositPolicy {
+        ON_FULL_OR_IDLE("Al llenarse (≤3) o volver a base"),
+        ON_FULL_ONLY("Sólo mochila casi llena (≤3 libres)"),
+        MANUAL_ONLY("Sólo por orden manual");
+
+        private final String displayName;
+
+        AutoDepositPolicy(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public String getDisplayName() { return displayName; }
+
+        public AutoDepositPolicy next() {
+            AutoDepositPolicy[] vals = values();
+            return vals[(this.ordinal() + 1) % vals.length];
+        }
+
+        public static AutoDepositPolicy fromName(String name) {
+            if (name == null) return ON_FULL_OR_IDLE;
+            for (AutoDepositPolicy p : values()) {
+                if (p.name().equalsIgnoreCase(name)) return p;
+            }
+            return ON_FULL_OR_IDLE;
+        }
+    }
+
     private boolean autoFollow = true;
     private boolean autoEquip = true;
     private boolean autoEat = true;
@@ -12,6 +71,8 @@ public class CompanionSettings {
     private boolean allowBlockPlacement = true;
     private boolean allowCombat = true;
     private boolean enableChunkLoading = true;
+    private FoodStoragePolicy foodStoragePolicy = FoodStoragePolicy.RESERVE_16_STORE_REST;
+    private AutoDepositPolicy autoDepositPolicy = AutoDepositPolicy.ON_FULL_OR_IDLE;
 
     public CompanionSettings() {}
 
@@ -42,6 +103,22 @@ public class CompanionSettings {
     public boolean isEnableChunkLoading() { return enableChunkLoading; }
     public void setEnableChunkLoading(boolean enableChunkLoading) { this.enableChunkLoading = enableChunkLoading; }
 
+    public FoodStoragePolicy getFoodStoragePolicy() { return foodStoragePolicy; }
+    public void setFoodStoragePolicy(FoodStoragePolicy policy) {
+        this.foodStoragePolicy = policy != null ? policy : FoodStoragePolicy.RESERVE_16_STORE_REST;
+    }
+    public void cycleFoodStoragePolicy() {
+        this.foodStoragePolicy = this.foodStoragePolicy.next();
+    }
+
+    public AutoDepositPolicy getAutoDepositPolicy() { return autoDepositPolicy; }
+    public void setAutoDepositPolicy(AutoDepositPolicy policy) {
+        this.autoDepositPolicy = policy != null ? policy : AutoDepositPolicy.ON_FULL_OR_IDLE;
+    }
+    public void cycleAutoDepositPolicy() {
+        this.autoDepositPolicy = this.autoDepositPolicy.next();
+    }
+
     public CompoundTag serializeNBT() {
         CompoundTag tag = new CompoundTag();
         tag.putBoolean("AutoFollow", autoFollow);
@@ -53,6 +130,8 @@ public class CompanionSettings {
         tag.putBoolean("AllowBlockPlacement", allowBlockPlacement);
         tag.putBoolean("AllowCombat", allowCombat);
         tag.putBoolean("EnableChunkLoading", enableChunkLoading);
+        tag.putString("FoodStoragePolicy", foodStoragePolicy.name());
+        tag.putString("AutoDepositPolicy", autoDepositPolicy.name());
         return tag;
     }
 
@@ -66,5 +145,7 @@ public class CompanionSettings {
         if (tag.contains("AllowBlockPlacement")) allowBlockPlacement = tag.getBoolean("AllowBlockPlacement");
         if (tag.contains("AllowCombat")) allowCombat = tag.getBoolean("AllowCombat");
         if (tag.contains("EnableChunkLoading")) enableChunkLoading = tag.getBoolean("EnableChunkLoading");
+        if (tag.contains("FoodStoragePolicy")) foodStoragePolicy = FoodStoragePolicy.fromName(tag.getString("FoodStoragePolicy"));
+        if (tag.contains("AutoDepositPolicy")) autoDepositPolicy = AutoDepositPolicy.fromName(tag.getString("AutoDepositPolicy"));
     }
 }

@@ -47,16 +47,24 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
     private static final String[] TAB_KEYS = {
             "gui.aicompanion.tab.inventory", "gui.aicompanion.tab.name", "gui.aicompanion.tab.actual",
             "gui.aicompanion.tab.orders", "gui.aicompanion.tab.queue", "gui.aicompanion.tab.build",
-            "gui.aicompanion.tab.ai", "gui.aicompanion.tab.memory", "gui.aicompanion.tab.stats", "gui.aicompanion.tab.config"
+            "gui.aicompanion.tab.chests", "gui.aicompanion.tab.ai", "gui.aicompanion.tab.memory",
+            "gui.aicompanion.tab.stats", "gui.aicompanion.tab.config"
     };
 
     private static final String[] TAB_NAMES = {
             "INVENTARIO", "NOMBRE", "ACTUAL", "ÓRDENES", "COLA",
-            "CONSTRUCCIÓN", "IA", "MEMORIA", "ESTADÍSTICAS", "CONFIG"
+            "CONSTRUCCIÓN", "BAÚLES", "IA", "MEMORIA", "ESTADÍSTICAS", "CONFIG"
     };
 
     private int selectedTab = 0;
     private S2C_SyncCompanionDataPacket syncedData = null;
+
+    // Chests Tab (Tab 6) state
+    private int chestScrollOffset = 0;
+    private static final int CHESTS_PER_PAGE = 3;
+    private int renamingChestId = -1;
+    private String renamingChestInitialName = "";
+    private EditBox chestRenameInput = null;
 
     // Name Tab state
     private EditBox nameInput;
@@ -94,7 +102,7 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
     private final List<OrderBadge> currentOrderBadges = new ArrayList<>();
 
     // Modals
-    private enum ModalType { NONE, MINE, CHOP, KILL, GOTO, DISMISS_CONFIRM, ITEM_CATALOG }
+    private enum ModalType { NONE, MINE, CHOP, KILL, GOTO, DISMISS_CONFIRM, ITEM_CATALOG, RENAME_CHEST }
     private ModalType activeModal = ModalType.NONE;
 
     // Dynamic Catalog
@@ -728,6 +736,9 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         if (this.catalogSearchInput != null && this.activeModal == ModalType.ITEM_CATALOG) {
             this.catalogSearchInput.tick();
         }
+        if (this.chestRenameInput != null && this.activeModal == ModalType.RENAME_CHEST) {
+            this.chestRenameInput.tick();
+        }
 
         // Submission timeout fallback (5 seconds)
         if (isSubmitting && System.currentTimeMillis() - submitRequestTimestamp > 5000) {
@@ -772,6 +783,9 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             if (this.activeModal == ModalType.ITEM_CATALOG) {
                 if (this.catalogSearchInput != null && this.catalogSearchInput.isFocused()) return true;
             }
+            if (this.activeModal == ModalType.RENAME_CHEST) {
+                if (this.chestRenameInput != null && this.chestRenameInput.isFocused()) return true;
+            }
             return false;
         }
         if (this.selectedTab == 1 && this.nameInput != null && this.nameInput.isFocused()) {
@@ -810,6 +824,12 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
                     return true;
                 }
             }
+            if (this.activeModal == ModalType.RENAME_CHEST) {
+                if (this.chestRenameInput != null && this.chestRenameInput.isFocused()) {
+                    this.chestRenameInput.charTyped(codePoint, modifiers);
+                    return true;
+                }
+            }
             return true; // Modal is open: block input from reaching background tabs
         }
 
@@ -839,6 +859,18 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         if (this.activeModal != ModalType.NONE) {
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
                 closeModal();
+                return true;
+            }
+            if (this.activeModal == ModalType.RENAME_CHEST && this.chestRenameInput != null) {
+                if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER || keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER) {
+                    String newName = this.chestRenameInput.getValue().trim();
+                    if (!newName.isEmpty() && this.renamingChestId > 0) {
+                        sendAction(C2S_ActionPacket.Action.CHEST_RENAME, this.renamingChestId + ":" + newName);
+                    }
+                    closeModal();
+                    return true;
+                }
+                this.chestRenameInput.keyPressed(keyCode, scanCode, modifiers);
                 return true;
             }
             if (this.activeModal == ModalType.ITEM_CATALOG) {
@@ -954,6 +986,16 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             }
             return true;
         }
+        if (this.selectedTab == 6 && this.activeModal == ModalType.NONE && syncedData != null && syncedData.authorizedChests != null) {
+            int maxOffset = Math.max(0, syncedData.authorizedChests.size() - CHESTS_PER_PAGE);
+            if (delta < 0 && chestScrollOffset < maxOffset) {
+                chestScrollOffset++;
+                return true;
+            } else if (delta > 0 && chestScrollOffset > 0) {
+                chestScrollOffset--;
+                return true;
+            }
+        }
         if (this.selectedTab == 5 && this.buildingStudioView != null) {
             if (this.buildingStudioView.mouseScrolled(mouseX, mouseY, delta, this.leftPos, this.topPos + 48)) {
                 return true;
@@ -984,7 +1026,7 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             if (this.selectedTab == 1 && this.nameInput != null && !this.nameInput.isFocused() && data.customName != null && !data.customName.isEmpty()) {
                 this.nameInput.setValue(data.customName);
             }
-            if (this.selectedTab == 9) {
+            if (this.activeModal == ModalType.NONE && (this.selectedTab == 6 || this.selectedTab == 7 || this.selectedTab == 10)) {
                 this.init();
             }
         }
@@ -999,21 +1041,22 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         int left = this.leftPos;
         int top = this.topPos;
 
-        // 1. Two rows of 5 Tabs across the top (width 82 each, total 5 * 84 = 420 px)
-        int tabW = 82;
+        // 1. Two rows of Tabs across the top: Row 1 has 5 tabs (width 82), Row 2 has 6 tabs (width 68)
+        int tabW1 = 82;
         int tabH = 14;
         for (int i = 0; i < 5; i++) {
             final int tabIndex = i;
             this.addRenderableWidget(new EsclabTabButton(
-                    left + 5 + i * (tabW + 2), top + 16, tabW, tabH,
+                    left + 5 + i * (tabW1 + 2), top + 16, tabW1, tabH,
                     Component.translatable(TAB_KEYS[i]), tabIndex, selectedTab == tabIndex,
                     b -> switchTab(tabIndex)
             ));
         }
-        for (int i = 5; i < 10; i++) {
+        int tabW2 = 68;
+        for (int i = 5; i < TAB_KEYS.length; i++) {
             final int tabIndex = i;
             this.addRenderableWidget(new EsclabTabButton(
-                    left + 5 + (i - 5) * (tabW + 2), top + 32, tabW, tabH,
+                    left + 6 + (i - 5) * (tabW2 + 2), top + 32, tabW2, tabH,
                     Component.translatable(TAB_KEYS[i]), tabIndex, selectedTab == tabIndex,
                     b -> switchTab(tabIndex)
             ));
@@ -1028,14 +1071,17 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
 
         // 2. Tab Specific Widgets
         if (selectedTab == 0) {
-            // INVENTARIO: Quick buttons under the entity box
+            // INVENTARIO: Quick buttons under the entity box + mochila actions
             this.addRenderableWidget(new EsclabButton(left + 12, panelTop + 130, 50, 16, Component.literal("Seguir"), b -> sendAction(C2S_ActionPacket.Action.FOLLOW)));
             this.addRenderableWidget(new EsclabButton(left + 66, panelTop + 130, 50, 16, Component.literal("Esperar"), b -> sendAction(C2S_ActionPacket.Action.STAY)));
 
             boolean canModify = menu.canModifyCompanionInventory(Minecraft.getInstance().player);
-            EsclabButton btnOrganize = new EsclabButton(left + 194, top + 146, 162, 18, Component.literal("ORGANIZAR MOCHILA"), b -> sendAction(C2S_ActionPacket.Action.ORGANIZE_INVENTORY));
+            EsclabButton btnOrganize = new EsclabButton(left + 194, top + 146, 78, 18, Component.literal("ORGANIZAR"), b -> sendAction(C2S_ActionPacket.Action.ORGANIZE_INVENTORY));
             btnOrganize.active = canModify;
             this.addRenderableWidget(btnOrganize);
+
+            this.addRenderableWidget(new EsclabButton(left + 274, top + 146, 92, 18, Component.literal("GUARDAR BAÚL"), b -> sendAction(C2S_ActionPacket.Action.DEPOSIT)));
+            this.addRenderableWidget(new EsclabButton(left + 368, top + 146, 52, 18, Component.literal("EQUIPAR"), b -> sendAction(C2S_ActionPacket.Action.EQUIP_BEST)));
         } else if (selectedTab == 1) {
             // NOMBRE: Rename companion
             String currentName = syncedData != null && !syncedData.customName.isEmpty() ? syncedData.customName : (companion != null ? companion.getCustomCompanionName() : "Esclavo");
@@ -1160,20 +1206,49 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             // CONSTRUCCIÓN: Estudio de Construcción 3D & Schematics
             this.buildingStudioView.init(left, panelTop);
         } else if (selectedTab == 6) {
-            // IA: Conexión y planificador
+            // BAÚLES: Gestión de Baúles Autorizados y Políticas Autónomas de Comida/Excedentes
+            String foodLabel = syncedData != null && syncedData.foodPolicyDisplay != null ? syncedData.foodPolicyDisplay : "Reservar 16 y guardar resto en Baúl";
+            String depositLabel = syncedData != null && syncedData.autoDepositPolicyDisplay != null ? syncedData.autoDepositPolicyDisplay : "Al llenar mochila o en reposo";
+
+            this.addRenderableWidget(new EsclabButton(left + 185, panelTop + 186, 228, 16, Component.literal(foodLabel + " ▼"), b -> {
+                sendAction(C2S_ActionPacket.Action.CYCLE_FOOD_POLICY);
+            }));
+            this.addRenderableWidget(new EsclabButton(left + 185, panelTop + 205, 228, 16, Component.literal(depositLabel + " ▼"), b -> {
+                sendAction(C2S_ActionPacket.Action.CYCLE_AUTODEPOSIT_POLICY);
+            }));
+
+            this.addRenderableWidget(new EsclabButton(left + 15, panelTop + 228, 168, 18, Component.literal("+ AUTORIZAR BAÚL CERCANO"), b -> {
+                sendAction(C2S_ActionPacket.Action.CHEST_AUTHORIZE_NEARBY);
+            }));
+            this.addRenderableWidget(new EsclabButton(left + 188, panelTop + 228, 168, 18, Component.literal("📦 GUARDAR EXCEDENTES AHORA"), b -> {
+                sendAction(C2S_ActionPacket.Action.DEPOSIT);
+            }));
+            this.addRenderableWidget(new EsclabButton(left + 360, panelTop + 228, 25, 18, Component.literal("◀"), b -> {
+                if (chestScrollOffset > 0) chestScrollOffset--;
+            }));
+            this.addRenderableWidget(new EsclabButton(left + 388, panelTop + 228, 25, 18, Component.literal("▶"), b -> {
+                int total = (syncedData != null && syncedData.authorizedChests != null) ? syncedData.authorizedChests.size() : 0;
+                if (chestScrollOffset < Math.max(0, total - CHESTS_PER_PAGE)) chestScrollOffset++;
+            }));
+        } else if (selectedTab == 7) {
+            // IA: Conexión, autonomía, personalidad y planificador
             String mode = com.aicompanion.AICompanionConfig.COMMON.aiMode.get();
             String btnText = "LOCAL_ONLY".equalsIgnoreCase(mode) ? "DIAGNÓSTICO MOTOR" : "PROBAR CONEXIÓN";
-            this.addRenderableWidget(new EsclabButton(left + 20, panelTop + 115, 140, 20, Component.literal(btnText), b -> {
+            this.addRenderableWidget(new EsclabButton(left + 15, panelTop + 118, 125, 20, Component.literal(btnText), b -> {
                 connectionTestStatus = "LOCAL_ONLY".equalsIgnoreCase(mode)
                         ? "Motor Baritone 3D y Reglas: 100% OPERATIVO"
                         : "Comprobando endpoint...";
                 sendAction(C2S_ActionPacket.Action.TEST_LLM_CONNECTION);
             }));
-            this.addRenderableWidget(new EsclabButton(left + 170, panelTop + 115, 120, 20, Component.literal("REPLANIFICAR"), b -> sendAction(C2S_ActionPacket.Action.REPLAN)));
-        } else if (selectedTab == 7) {
-            // MEMORIA: Guardar base
-            this.addRenderableWidget(new EsclabButton(left + 20, panelTop + 120, 180, 20, Component.literal("GUARDAR BASE AQUÍ"), b -> sendAction(C2S_ActionPacket.Action.SET_HOME)));
-        } else if (selectedTab == 9) {
+            this.addRenderableWidget(new EsclabButton(left + 144, panelTop + 118, 92, 20, Component.literal("REPLANIFICAR"), b -> sendAction(C2S_ActionPacket.Action.REPLAN)));
+            this.addRenderableWidget(new EsclabButton(left + 240, panelTop + 118, 86, 20, Component.literal("AUTONOMÍA ▼"), b -> sendAction(C2S_ActionPacket.Action.CYCLE_AI_AUTONOMY)));
+            this.addRenderableWidget(new EsclabButton(left + 330, panelTop + 118, 85, 20, Component.literal("CARÁCTER ▼"), b -> sendAction(C2S_ActionPacket.Action.CYCLE_AI_PERSONALITY)));
+        } else if (selectedTab == 8) {
+            // MEMORIA: Guardar base, limpiar zonas de peligro, ver baúles
+            this.addRenderableWidget(new EsclabButton(left + 18, panelTop + 120, 128, 20, Component.literal("GUARDAR BASE AQUÍ"), b -> sendAction(C2S_ActionPacket.Action.SET_HOME)));
+            this.addRenderableWidget(new EsclabButton(left + 152, panelTop + 120, 128, 20, Component.literal("LIMPIAR PELIGROS"), b -> sendAction(C2S_ActionPacket.Action.CLEAR_DANGER_ZONES)));
+            this.addRenderableWidget(new EsclabButton(left + 286, panelTop + 120, 125, 20, Component.literal("VER BAÚLES"), b -> switchTab(6)));
+        } else if (selectedTab == 10) {
             // CONFIG: Toggles and Keybinds directly in tab
             int tx = left + 15;
             int ty = panelTop + 16;
@@ -1258,6 +1333,18 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         }
     }
 
+    private void openRenameChestModal(int chestId, String currentName) {
+        this.renamingChestId = chestId;
+        openModal(ModalType.RENAME_CHEST);
+        int modalLeft = this.leftPos + (this.imageWidth - 250) / 2;
+        int modalTop = this.topPos + (this.imageHeight - 160) / 2;
+        this.chestRenameInput = new EditBox(this.font, modalLeft + 20, modalTop + 56, 210, 18, Component.literal("Nombre del baúl"));
+        this.chestRenameInput.setMaxLength(24);
+        this.chestRenameInput.setValue(currentName != null ? currentName : ("Baúl #" + chestId));
+        this.chestRenameInput.setFocused(true);
+        this.setFocused(this.chestRenameInput);
+    }
+
     private void openModal(ModalType type) {
         this.activeModal = type;
         if (this.orderInput != null) {
@@ -1318,6 +1405,17 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             this.catalogResults = com.aicompanion.ai.parser.ItemSearchRegistry.searchCatalog("");
             this.catalogSearchInput.setFocused(true);
             this.setFocused(this.catalogSearchInput);
+        } else if (type == ModalType.RENAME_CHEST) {
+            int modalLeft = this.leftPos + (this.imageWidth - 250) / 2;
+            int modalTop = this.topPos + (this.imageHeight - 160) / 2;
+            this.chestRenameInput = new EditBox(this.font, modalLeft + 16, modalTop + 52, 218, 18, Component.literal("Nombre del Baúl"));
+            this.chestRenameInput.setMaxLength(28);
+            this.chestRenameInput.setValue(this.renamingChestInitialName != null && !this.renamingChestInitialName.isEmpty()
+                    ? this.renamingChestInitialName
+                    : ("Baúl #" + this.renamingChestId));
+            this.chestRenameInput.moveCursorToEnd();
+            this.chestRenameInput.setFocused(true);
+            this.setFocused(this.chestRenameInput);
         }
     }
 
@@ -1407,6 +1505,8 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         // Render Active Modal Dialog if open
         if (activeModal != ModalType.NONE) {
             renderModal(guiGraphics, mouseX, mouseY);
+        } else if (selectedTab == 6) {
+            renderChestsTabTooltips(guiGraphics, this.leftPos, this.topPos + 48, mouseX, mouseY);
         }
     }
 
@@ -1424,9 +1524,9 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         String mainTitle = syncedData != null && !syncedData.customName.isEmpty() ? syncedData.customName.toUpperCase() : "ESCLAVO";
         guiGraphics.drawString(this.font, mainTitle, left + 8, top + 4, 0xFFFFD700, true);
 
-        // 2. Main Top Panel Background (430 x 152 or 256 for studio) at top + 48
+        // 2. Main Top Panel Background (430 x 152, 166 for config, or 256 for studio & chests) at top + 48
         int panelTop = top + 48;
-        int panelH = (selectedTab == 5) ? 256 : 152;
+        int panelH = (selectedTab == 5 || selectedTab == 6) ? 256 : (selectedTab == 10 ? 166 : 152);
         drawCustomPanel(guiGraphics, left, panelTop, this.imageWidth, panelH);
 
         // 3. Tab-Specific Content Rendering (only when no modal is overlaying)
@@ -1444,12 +1544,14 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             } else if (selectedTab == 5) {
                 renderConstructionTab(guiGraphics, left, panelTop, mouseX, mouseY);
             } else if (selectedTab == 6) {
-                renderAITab(guiGraphics, left, panelTop);
+                renderChestsTab(guiGraphics, left, panelTop, mouseX, mouseY);
             } else if (selectedTab == 7) {
-                renderMemoryTab(guiGraphics, left, panelTop);
+                renderAITab(guiGraphics, left, panelTop);
             } else if (selectedTab == 8) {
-                renderStatsTab(guiGraphics, left, panelTop);
+                renderMemoryTab(guiGraphics, left, panelTop);
             } else if (selectedTab == 9) {
+                renderStatsTab(guiGraphics, left, panelTop);
+            } else if (selectedTab == 10) {
                 renderConfigTab(guiGraphics, left, panelTop);
             }
         }
@@ -1629,7 +1731,7 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
     private void renderActualTab(GuiGraphics guiGraphics, int left, int panelTop) {
         guiGraphics.drawString(this.font, "ESTADO ACTUAL Y PROGRESO DE MISIÓN", left + 20, panelTop + 10, 0xFFFFD700, false);
 
-        drawInsetBox(guiGraphics, left + 20, panelTop + 22, 390, 88);
+        drawInsetBox(guiGraphics, left + 20, panelTop + 22, 390, 90);
 
         String taskDesc = syncedData != null && !syncedData.currentTaskDesc.isEmpty() ? syncedData.currentTaskDesc : "En espera de órdenes";
         String taskProg = syncedData != null ? syncedData.currentTaskProgress : "0 / 0";
@@ -1656,15 +1758,15 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             badgeColor = 0xFFA0B0C4;
         }
 
-        guiGraphics.drawString(this.font, "Objetivo: " + taskDesc, left + 30, panelTop + 28, 0xFFFFFFFF, false);
-        guiGraphics.drawString(this.font, badge, left + 265, panelTop + 28, badgeColor, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("Objetivo: " + taskDesc, 230), left + 30, panelTop + 26, 0xFFFFFFFF, false);
+        guiGraphics.drawString(this.font, badge, left + 265, panelTop + 26, badgeColor, false);
 
-        guiGraphics.drawString(this.font, "Etapa: " + taskStage + " (" + taskType + ")", left + 30, panelTop + 40, 0xFFFFAA00, false);
-        guiGraphics.drawString(this.font, "Actividad: " + taskSubstate, left + 30, panelTop + 51, 0xFF8AA8D4, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("Etapa: " + taskStage + " (" + taskType + ")", 370), left + 30, panelTop + 38, 0xFFFFAA00, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("Actividad: " + taskSubstate, 370), left + 30, panelTop + 49, 0xFF8AA8D4, false);
 
         // Progress bar
         int pbX = left + 30;
-        int pbY = panelTop + 63;
+        int pbY = panelTop + 61;
         int pbW = 350;
         guiGraphics.fill(pbX, pbY, pbX + pbW, pbY + 7, 0xFF141820);
         guiGraphics.renderOutline(pbX, pbY, pbW, 7, 0xFF2A3444);
@@ -1689,18 +1791,25 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         }
 
         String progLabel = "Progreso Real: " + taskProg + (pct > 0 ? " (" + (int)(pct * 100) + "%)" : "");
-        guiGraphics.drawString(this.font, progLabel, left + 30, panelTop + 73, 0xFF3CD058, false);
+        guiGraphics.drawString(this.font, progLabel, left + 30, panelTop + 71, 0xFF3CD058, false);
 
         // Contextual "Qué Falta" System
         if (!taskFailure.isEmpty()) {
-            guiGraphics.drawString(this.font, "⚠ Bloqueado por: " + taskFailure, left + 30, panelTop + 85, 0xFFFF5555, false);
+            guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("⚠ Bloqueado por: " + taskFailure, 370), left + 30, panelTop + 83, 0xFFFF5555, false);
         } else if (missingAmount > 0) {
-            guiGraphics.drawString(this.font, "Falta: " + missingAmount + " unidades físicas en inventario para terminar.", left + 30, panelTop + 85, 0xFFFFD700, false);
+            guiGraphics.drawString(this.font, "Falta: " + missingAmount + " unidades físicas en inventario para terminar.", left + 30, panelTop + 83, 0xFFFFD700, false);
         } else if (lastProg > 0 && Minecraft.getInstance().level != null) {
             long ticksAgo = Math.max(0, Minecraft.getInstance().level.getGameTime() - lastProg);
-            guiGraphics.drawString(this.font, "Última actividad: hace " + (ticksAgo / 20) + "s  |  Navegación Baritone 3D Activa", left + 30, panelTop + 85, 0xFFA0B0C4, false);
+            guiGraphics.drawString(this.font, "Última actividad: hace " + (ticksAgo / 20) + "s  |  Navegación Baritone 3D Activa", left + 30, panelTop + 83, 0xFFA0B0C4, false);
         } else {
-            guiGraphics.drawString(this.font, "Esclavo está listo para recibir órdenes desde la pestaña ÓRDENES.", left + 30, panelTop + 85, 0xFFA0B0C4, false);
+            guiGraphics.drawString(this.font, "Esclavo está listo para recibir órdenes desde la pestaña ÓRDENES.", left + 30, panelTop + 83, 0xFFA0B0C4, false);
+        }
+
+        // Extra line: Live Logistics or Active Construction Anchor
+        if (syncedData != null && syncedData.logisticsStatusBanner != null && syncedData.logisticsStatusBanner.startsWith("GUARDANDO")) {
+            guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("📦 " + syncedData.logisticsStatusBanner, 370), left + 30, panelTop + 96, 0xFF00E5FF, false);
+        } else if (syncedData != null && syncedData.activeBuildSummary != null && !syncedData.activeBuildSummary.isEmpty()) {
+            guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("🏗 Construcción: " + syncedData.activeBuildSummary, 370), left + 30, panelTop + 96, 0xFF00E5FF, false);
         }
     }
 
@@ -1778,7 +1887,7 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
 
         String activeTask = syncedData != null && !syncedData.currentTaskDesc.isEmpty() ? syncedData.currentTaskDesc : "En reposo";
         guiGraphics.drawString(this.font, "▶ En ejecución activa:", left + 30, panelTop + 34, 0xFF3CD058, false);
-        guiGraphics.drawString(this.font, activeTask, left + 160, panelTop + 34, 0xFFFFD700, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth(activeTask, 235), left + 160, panelTop + 34, 0xFFFFD700, false);
 
         guiGraphics.drawString(this.font, "Siguientes etapas programadas:", left + 30, panelTop + 48, 0xFFA0B0C4, false);
 
@@ -1789,7 +1898,7 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         } else {
             for (int i = 0; i < Math.min(3, queue.size()); i++) {
                 int qy = panelTop + 62 + i * 18;
-                guiGraphics.drawString(this.font, (i + 1) + ". " + queue.get(i), left + 40, qy + 2, 0xFFFFFFFF, false);
+                guiGraphics.drawString(this.font, this.font.plainSubstrByWidth((i + 1) + ". " + queue.get(i), 335), left + 40, qy + 2, 0xFFFFFFFF, false);
                 drawSmallButton(guiGraphics, left + 380, qy, 18, 14, "X", 0xFFFF5555);
             }
         }
@@ -1801,44 +1910,196 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
         }
     }
 
-    private void renderAITab(GuiGraphics guiGraphics, int left, int panelTop) {
-        guiGraphics.drawString(this.font, "CONFIGURACIÓN DE IA Y PLANIFICADOR", left + 20, panelTop + 12, 0xFFFFD700, false);
-        drawInsetBox(guiGraphics, left + 20, panelTop + 26, 390, 84);
+    private void renderChestsTab(GuiGraphics guiGraphics, int left, int panelTop, int mouseX, int mouseY) {
+        List<S2C_SyncCompanionDataPacket.AuthorizedChestDTO> chests =
+                (syncedData != null && syncedData.authorizedChests != null) ? syncedData.authorizedChests : new ArrayList<>();
 
-        String mode = com.aicompanion.AICompanionConfig.COMMON.aiMode.get();
+        // 1. Header
+        guiGraphics.drawString(this.font, "BAÚLES AUTORIZADOS Y LOGÍSTICA AUTÓNOMA", left + 15, panelTop + 5, 0xFFFFD700, false);
+        String countInfo = "Registrados: " + chests.size() + " | Silbato: Shift+Clic";
+        guiGraphics.drawString(this.font, countInfo, left + 415 - this.font.width(countInfo), panelTop + 5, 0xFFA0B0C4, false);
 
-        if ("LOCAL_ONLY".equalsIgnoreCase(mode)) {
-            guiGraphics.drawString(this.font, "● MODO: LOCAL AUTÓNOMO (Sin servidores ni LLMs externos)", left + 28, panelTop + 33, 0xFF3CD058, false);
-            guiGraphics.drawString(this.font, "● NAVEGACIÓN: Baritone 3D Voxel A* (Privado y Nativo)", left + 28, panelTop + 45, 0xFFFFD700, false);
-            guiGraphics.drawString(this.font, "● PLANIFICADOR: Goal Search & Reglas Locales Deterministas", left + 28, panelTop + 57, 0xFFD8E2ED, false);
-            String connStatus = connectionTestStatus != null ? connectionTestStatus : "ACTIVO: 100% Autónomo y listo para recibir órdenes";
-            guiGraphics.drawString(this.font, "● ESTADO: " + connStatus, left + 28, panelTop + 69, 0xFF3CD058, false);
-            guiGraphics.drawString(this.font, "Capacidades: Minería, Tala, Combate, Puenteo y Túneles 3D", left + 28, panelTop + 81, 0xFF8AA8D4, false);
+        // 2. Live Logistics Activity Banner (What Esclavo is storing right now or queued next)
+        drawInsetBox(guiGraphics, left + 15, panelTop + 16, 400, 32);
+        String statusBanner = (syncedData != null && syncedData.logisticsStatusBanner != null && !syncedData.logisticsStatusBanner.isEmpty())
+                ? syncedData.logisticsStatusBanner
+                : "EN ESPERA: Sin operación de guardado activa";
+        String itemsBanner = (syncedData != null && syncedData.logisticsItemsBanner != null && !syncedData.logisticsItemsBanner.isEmpty())
+                ? syncedData.logisticsItemsBanner
+                : "Usa '+ AUTORIZAR BAÚL CERCANO' o Shift+Clic Derecho con el Silbato sobre un cofre.";
+
+        int statusColor = 0xFFE0E8F2;
+        if (statusBanner.startsWith("GUARDANDO")) {
+            statusColor = 0xFF00E676;
+        } else if (statusBanner.startsWith("EN COLA")) {
+            statusColor = 0xFFFFD700;
+        }
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("● " + statusBanner, 388), left + 21, panelTop + 20, statusColor, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth(itemsBanner, 388), left + 21, panelTop + 32, 0xFF8AA8D4, false);
+
+        // 3. Scrollable Authorized Chests List
+        drawInsetBox(guiGraphics, left + 15, panelTop + 50, 400, 130);
+
+        if (chests.isEmpty()) {
+            guiGraphics.drawCenteredString(this.font, "⚠ No hay baúles autorizados todavía.", left + 215, panelTop + 82, 0xFFFFAA00);
+            guiGraphics.drawCenteredString(this.font, "Acércate a un cofre o barril y pulsa '+ AUTORIZAR BAÚL CERCANO'", left + 215, panelTop + 100, 0xFFD8E2ED);
+            guiGraphics.drawCenteredString(this.font, "o haz Shift + Clic Derecho sobre el cofre con el Silbato de Esclavo.", left + 215, panelTop + 114, 0xFF8AA8D4);
+            guiGraphics.drawCenteredString(this.font, "Cada baúl recibirá un #ID, nombre y categoría para clasificar tus ítems.", left + 215, panelTop + 132, 0xFF3CD058);
         } else {
-            String endpoint = com.aicompanion.AICompanionConfig.COMMON.aiEndpoint.get();
-            String model = com.aicompanion.AICompanionConfig.COMMON.aiModel.get();
+            int maxOffset = Math.max(0, chests.size() - CHESTS_PER_PAGE);
+            if (chestScrollOffset > maxOffset) chestScrollOffset = maxOffset;
+            if (chestScrollOffset < 0) chestScrollOffset = 0;
 
-            guiGraphics.drawString(this.font, "● MODO: " + mode.toUpperCase() + "  |  REGLAS DETERMINISTAS: ACTIVAS", left + 28, panelTop + 33, 0xFF3CD058, false);
-            String epStr = this.font.plainSubstrByWidth("● ENDPOINT: " + endpoint, 370);
-            guiGraphics.drawString(this.font, epStr, left + 28, panelTop + 45, 0xFFFFAA00, false);
-            guiGraphics.drawString(this.font, "● MODELO: " + model, left + 28, panelTop + 57, 0xFFD8E2ED, false);
+            for (int idx = 0; idx < CHESTS_PER_PAGE; idx++) {
+                int listIdx = chestScrollOffset + idx;
+                if (listIdx >= chests.size()) break;
 
-            String connStatus = connectionTestStatus != null ? connectionTestStatus : "STANDBY (Haz clic en PROBAR CONEXIÓN abajo)";
-            int connColor = connectionTestStatus != null ? 0xFF3CD058 : 0xFFA0B0C4;
-            guiGraphics.drawString(this.font, "● ESTADO: " + connStatus, left + 28, panelTop + 69, connColor, false);
-            guiGraphics.drawString(this.font, "Planificador: Baritone 3D A* con Fallback Determinista Seguro", left + 28, panelTop + 81, 0xFF8AA8D4, false);
+                S2C_SyncCompanionDataPacket.AuthorizedChestDTO entry = chests.get(listIdx);
+                int cardX = left + 19;
+                int cardY = panelTop + 54 + idx * 41;
+                int cardW = 392;
+                int cardH = 38;
+
+                int bg = entry.isPrimary ? 0xFF1D293A : 0xFF151C27;
+                int border = entry.isPrimary ? 0xFFFFD700 : 0xFF2C394B;
+                guiGraphics.fill(cardX, cardY, cardX + cardW, cardY + cardH, bg);
+                guiGraphics.renderOutline(cardX, cardY, cardW, cardH, border);
+
+                // Row 1: [#ID] Custom Name + Primary Star + Slot Occupancy
+                String title = "[#" + entry.chestId + "] " + entry.name + (entry.isPrimary ? " ★" : "");
+                guiGraphics.drawString(this.font, this.font.plainSubstrByWidth(title, 134), cardX + 6, cardY + 4, entry.isPrimary ? 0xFFFFD700 : 0xFFFFFFFF, false);
+
+                if (entry.totalSlots > 0) {
+                    String occ = "[" + entry.occupiedSlots + "/" + entry.totalSlots + "]";
+                    int occColor = entry.occupiedSlots >= entry.totalSlots ? 0xFFFF5555
+                            : (entry.occupiedSlots >= entry.totalSlots * 0.75 ? 0xFFFFAA00 : 0xFF3CD058);
+                    guiGraphics.drawString(this.font, occ, cardX + 142, cardY + 4, occColor, false);
+                } else {
+                    guiGraphics.drawString(this.font, "[Lejos]", cardX + 142, cardY + 4, 0xFF7A8D9F, false);
+                }
+
+                // Row 2: Coordinates and Distance
+                int cx = syncedData != null ? syncedData.posX : entry.x;
+                int cy = syncedData != null ? syncedData.posY : entry.y;
+                int cz = syncedData != null ? syncedData.posZ : entry.z;
+                double dist = Math.sqrt(Math.pow(entry.x - cx, 2) + Math.pow(entry.y - cy, 2) + Math.pow(entry.z - cz, 2));
+                String coordsAndDist = String.format("Pos: %d, %d, %d (%.0fm)", entry.x, entry.y, entry.z, dist);
+                guiGraphics.drawString(this.font, this.font.plainSubstrByWidth(coordsAndDist, 180), cardX + 6, cardY + 15, 0xFFA0B0C4, false);
+
+                // Row 3: Top Items Preview
+                String preview = "Ítems: " + (entry.topItemsSummary != null ? entry.topItemsSummary : "Vacío");
+                guiGraphics.drawString(this.font, this.font.plainSubstrByWidth(preview, 268), cardX + 6, cardY + 26, 0xFF8AA8D4, false);
+
+                // Inline Action Buttons on the Right of each Chest Card
+                String catLabel = entry.categoryDisplay != null ? entry.categoryDisplay : "General";
+                drawSmallButton(guiGraphics, cardX + 188, cardY + 3, 88, 14, catLabel + " ▼", 0xFF00E5FF);
+                drawSmallButton(guiGraphics, cardX + 279, cardY + 3, 62, 14, "✎ Nombre", 0xFFFFD700);
+                drawSmallButton(guiGraphics, cardX + 344, cardY + 3, 20, 14, "★", entry.isPrimary ? 0xFFFFD700 : 0xFFA0B0C4);
+                drawSmallButton(guiGraphics, cardX + 367, cardY + 3, 20, 14, "✕", 0xFFFF5555);
+                drawSmallButton(guiGraphics, cardX + 279, cardY + 20, 108, 14, "📦 Guardar Aquí", 0xFF3CD058);
+            }
+        }
+
+        // 4. Autonomous Food & Surplus Policies Labels (Widgets are at left + 185, panelTop + 186 and + 205)
+        guiGraphics.drawString(this.font, "Comida automática:", left + 15, panelTop + 190, 0xFFFFD700, false);
+        guiGraphics.drawString(this.font, "Guardar excedentes:", left + 15, panelTop + 209, 0xFFFFD700, false);
+    }
+
+    private void renderChestsTabTooltips(GuiGraphics guiGraphics, int left, int panelTop, int mouseX, int mouseY) {
+        List<S2C_SyncCompanionDataPacket.AuthorizedChestDTO> chests =
+                (syncedData != null && syncedData.authorizedChests != null) ? syncedData.authorizedChests : new ArrayList<>();
+        if (chests.isEmpty()) return;
+
+        for (int idx = 0; idx < CHESTS_PER_PAGE; idx++) {
+            int listIdx = chestScrollOffset + idx;
+            if (listIdx >= chests.size()) break;
+
+            S2C_SyncCompanionDataPacket.AuthorizedChestDTO entry = chests.get(listIdx);
+            int cardX = left + 19;
+            int cardY = panelTop + 54 + idx * 41;
+
+            if (isInside(mouseX, mouseY, cardX + 188, cardY + 3, 88, 14)) {
+                guiGraphics.renderTooltip(this.font, Component.literal("Cambiar categoría de [#" + entry.chestId + "] (General / Comida / Minerales / Madera / Botín)"), mouseX, mouseY);
+                return;
+            }
+            if (isInside(mouseX, mouseY, cardX + 279, cardY + 3, 62, 14)) {
+                guiGraphics.renderTooltip(this.font, Component.literal("Renombrar Baúl #" + entry.chestId + " (también etiqueta el cofre en el mundo)"), mouseX, mouseY);
+                return;
+            }
+            if (isInside(mouseX, mouseY, cardX + 344, cardY + 3, 20, 14)) {
+                guiGraphics.renderTooltip(this.font, Component.literal("Marcar [#" + entry.chestId + "] como Baúl Principal por defecto"), mouseX, mouseY);
+                return;
+            }
+            if (isInside(mouseX, mouseY, cardX + 367, cardY + 3, 20, 14)) {
+                guiGraphics.renderTooltip(this.font, Component.literal("§cDesautorizar Baúl #" + entry.chestId), mouseX, mouseY);
+                return;
+            }
+            if (isInside(mouseX, mouseY, cardX + 279, cardY + 20, 108, 14)) {
+                guiGraphics.renderTooltip(this.font, Component.literal("Ordenar a Esclavo guardar sus excedentes en [#" + entry.chestId + "] " + entry.name), mouseX, mouseY);
+                return;
+            }
         }
     }
 
-    private void renderMemoryTab(GuiGraphics guiGraphics, int left, int panelTop) {
-        guiGraphics.drawString(this.font, "MEMORIA Y PUNTOS DE INTERÉS", left + 20, panelTop + 14, 0xFFFFD700, false);
-        drawInsetBox(guiGraphics, left + 20, panelTop + 28, 390, 86);
+    private void renderAITab(GuiGraphics guiGraphics, int left, int panelTop) {
+        guiGraphics.drawString(this.font, "INTELIGENCIA ARTIFICIAL, AUTONOMÍA Y PLANIFICADOR", left + 15, panelTop + 10, 0xFFFFD700, false);
+        drawInsetBox(guiGraphics, left + 15, panelTop + 22, 400, 90);
 
-        String home = syncedData != null ? syncedData.homePos : "No establecida";
-        guiGraphics.drawString(this.font, "1. Base Principal: " + home, left + 30, panelTop + 36, 0xFF3CD058, false);
-        guiGraphics.drawString(this.font, "2. Cofre de Minerales: [Guardado]", left + 30, panelTop + 50, 0xFFD8E2ED, false);
-        guiGraphics.drawString(this.font, "3. Portal al Nether: [Guardado]", left + 30, panelTop + 64, 0xFFD8E2ED, false);
-        guiGraphics.drawString(this.font, "4. Mina Subterránea: [Guardada]", left + 30, panelTop + 78, 0xFFD8E2ED, false);
+        String mode = com.aicompanion.AICompanionConfig.COMMON.aiMode.get();
+        String autonomy = (syncedData != null && syncedData.aiAutonomyMode != null && !syncedData.aiAutonomyMode.isEmpty())
+                ? syncedData.aiAutonomyMode : "BALANCED";
+        String personality = (syncedData != null && syncedData.aiPersonalityMode != null && !syncedData.aiPersonalityMode.isEmpty())
+                ? syncedData.aiPersonalityMode : "STOIC";
+        String foodPol = (syncedData != null && syncedData.foodPolicyDisplay != null)
+                ? syncedData.foodPolicyDisplay : "Reservar 16 y guardar resto en Baúl";
+        String depPol = (syncedData != null && syncedData.autoDepositPolicyDisplay != null)
+                ? syncedData.autoDepositPolicyDisplay : "Al llenar mochila o en reposo";
+
+        if ("LOCAL_ONLY".equalsIgnoreCase(mode)) {
+            guiGraphics.drawString(this.font, "● MOTOR IA: AUTÓNOMO NATIVO (GOAP + Reglas Deterministas)", left + 23, panelTop + 28, 0xFF3CD058, false);
+        } else {
+            String model = com.aicompanion.AICompanionConfig.COMMON.aiModel.get();
+            guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("● MOTOR IA: " + mode.toUpperCase() + " (" + model + ") + GOAP", 384), left + 23, panelTop + 28, 0xFF3CD058, false);
+        }
+
+        guiGraphics.drawString(this.font, "● NAVEGACIÓN: Baritone 3D Voxel A*  |  AUTONOMÍA: " + autonomy + "  |  CARÁCTER: " + personality, left + 23, panelTop + 41, 0xFFFFD700, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("● GESTIÓN DE COMIDA: " + foodPol, 384), left + 23, panelTop + 54, 0xFF00E5FF, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("● GESTIÓN DE MOCHILA: " + depPol, 384), left + 23, panelTop + 67, 0xFFD8E2ED, false);
+        guiGraphics.drawString(this.font, "● CAPACIDADES: Minería, Tala 3D, Construcción, Combate y Enrutamiento a Baúles", left + 23, panelTop + 80, 0xFF8AA8D4, false);
+
+        String connStatus = connectionTestStatus != null ? connectionTestStatus : "ACTIVO: 100% Autónomo y listo para recibir órdenes";
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("● ESTADO: " + connStatus, 384), left + 23, panelTop + 93, 0xFF3CD058, false);
+    }
+
+    private void renderMemoryTab(GuiGraphics guiGraphics, int left, int panelTop) {
+        guiGraphics.drawString(this.font, "MEMORIA ESPACIAL Y PUNTOS DE INTERÉS REALES", left + 18, panelTop + 10, 0xFFFFD700, false);
+        drawInsetBox(guiGraphics, left + 18, panelTop + 22, 394, 92);
+
+        String home = syncedData != null && syncedData.homePos != null ? syncedData.homePos : "No establecida";
+        int chestCount = (syncedData != null && syncedData.authorizedChests != null) ? syncedData.authorizedChests.size() : 0;
+        String primaryChest = "Ninguno";
+        if (syncedData != null && syncedData.authorizedChests != null) {
+            for (S2C_SyncCompanionDataPacket.AuthorizedChestDTO c : syncedData.authorizedChests) {
+                if (c.isPrimary) {
+                    primaryChest = "[#" + c.chestId + "] " + c.name + " (" + c.x + ", " + c.y + ", " + c.z + ")";
+                    break;
+                }
+            }
+        }
+        String activeBuild = (syncedData != null && syncedData.activeBuildSummary != null && !syncedData.activeBuildSummary.isEmpty())
+                ? syncedData.activeBuildSummary : "Sin proyecto activo";
+        int deposits = syncedData != null ? syncedData.rememberedDepositsCount : 0;
+        int dangers = syncedData != null ? syncedData.dangerZonesCount : 0;
+        String recentLog = (syncedData != null && syncedData.currentTaskDesc != null && !syncedData.currentTaskDesc.isEmpty())
+                ? syncedData.currentTaskDesc + " | Misiones completadas: " + syncedData.tasksCompleted
+                : "Sin eventos recientes";
+
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("1. Base Principal (Home): " + home, 378), left + 26, panelTop + 28, 0xFF3CD058, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("2. Baúles Autorizados: " + chestCount + " | Principal: " + primaryChest, 378), left + 26, panelTop + 41, 0xFFFFD700, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("3. Proyecto de Construcción: " + activeBuild, 378), left + 26, panelTop + 54, 0xFF00E5FF, false);
+        guiGraphics.drawString(this.font, "4. Vetas y Recursos Recordados en el Mundo: " + deposits + " ubicaciones", left + 26, panelTop + 67, 0xFFD8E2ED, false);
+        guiGraphics.drawString(this.font, "5. Zonas de Peligro / Obstáculos Evitados: " + dangers + " zonas", left + 26, panelTop + 80, dangers > 0 ? 0xFFFFAA00 : 0xFFA0B0C4, false);
+        guiGraphics.drawString(this.font, this.font.plainSubstrByWidth("6. Actividad / Historial: " + recentLog, 378), left + 26, panelTop + 93, 0xFF8AA8D4, false);
     }
 
     private void renderStatsTab(GuiGraphics guiGraphics, int left, int panelTop) {
@@ -2026,6 +2287,17 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
             guiGraphics.drawString(this.font, "momento con el atajo o menú.", mx + 16, my + 84, 0xFFE0E8F2, false);
 
             drawModalButton(guiGraphics, mx + 20, my + 125, 95, 20, "CONFIRMAR");
+            drawModalButton(guiGraphics, mx + 135, my + 125, 95, 20, "CANCELAR");
+        } else if (activeModal == ModalType.RENAME_CHEST) {
+            guiGraphics.drawString(this.font, "RENOMBRAR BAÚL #" + renamingChestId, mx + 16, my + 14, 0xFFFFD700, false);
+            guiGraphics.drawString(this.font, "Nombre identificador del baúl:", mx + 16, my + 34, 0xFFD8E2ED, false);
+            if (chestRenameInput != null) {
+                chestRenameInput.render(guiGraphics, mouseX, mouseY, 0);
+            }
+            guiGraphics.drawString(this.font, "También se mostrará al abrir el cofre.", mx + 16, my + 82, 0xFF8AA8D4, false);
+            guiGraphics.drawString(this.font, "(Pulsa Enter o GUARDAR para confirmar)", mx + 16, my + 96, 0xFF3CD058, false);
+
+            drawModalButton(guiGraphics, mx + 20, my + 125, 95, 20, "GUARDAR");
             drawModalButton(guiGraphics, mx + 135, my + 125, 95, 20, "CANCELAR");
         }
         } finally {
@@ -2227,8 +2499,64 @@ public class CompanionScreen extends AbstractContainerScreen<CompanionMenu> {
                     this.onClose();
                     return true;
                 }
+            } else if (activeModal == ModalType.RENAME_CHEST) {
+                if (chestRenameInput != null && chestRenameInput.mouseClicked(mouseX, mouseY, button)) {
+                    chestRenameInput.setFocused(true);
+                    this.setFocused(chestRenameInput);
+                    return true;
+                }
+                if (isInside(mouseX, mouseY, mx + 20, my + 125, 95, 20)) {
+                    String newName = chestRenameInput != null ? chestRenameInput.getValue().trim() : "";
+                    if (!newName.isEmpty() && renamingChestId > 0) {
+                        sendAction(C2S_ActionPacket.Action.CHEST_RENAME, renamingChestId + ":" + newName);
+                    }
+                    closeModal();
+                    return true;
+                }
             }
             return true;
+        }
+
+        // Handle inline chest card buttons in Tab 6 (BAÚLES)
+        if (selectedTab == 6 && syncedData != null && syncedData.authorizedChests != null) {
+            int panelTop = this.topPos + 48;
+            List<S2C_SyncCompanionDataPacket.AuthorizedChestDTO> chests = syncedData.authorizedChests;
+            for (int idx = 0; idx < CHESTS_PER_PAGE; idx++) {
+                int listIdx = chestScrollOffset + idx;
+                if (listIdx >= chests.size()) break;
+
+                S2C_SyncCompanionDataPacket.AuthorizedChestDTO entry = chests.get(listIdx);
+                int cardX = this.leftPos + 19;
+                int cardY = panelTop + 54 + idx * 41;
+
+                // [Categoría ▼]
+                if (isInside(mouseX, mouseY, cardX + 188, cardY + 3, 88, 14)) {
+                    sendAction(C2S_ActionPacket.Action.CHEST_CYCLE_CATEGORY, String.valueOf(entry.chestId));
+                    return true;
+                }
+                // [✎ Nombre]
+                if (isInside(mouseX, mouseY, cardX + 279, cardY + 3, 62, 14)) {
+                    this.renamingChestId = entry.chestId;
+                    this.renamingChestInitialName = entry.name != null ? entry.name : ("Baúl #" + entry.chestId);
+                    openModal(ModalType.RENAME_CHEST);
+                    return true;
+                }
+                // [★] Primary
+                if (isInside(mouseX, mouseY, cardX + 344, cardY + 3, 20, 14)) {
+                    sendAction(C2S_ActionPacket.Action.CHEST_SET_PRIMARY, String.valueOf(entry.chestId));
+                    return true;
+                }
+                // [✕] Unauthorize
+                if (isInside(mouseX, mouseY, cardX + 367, cardY + 3, 20, 14)) {
+                    sendAction(C2S_ActionPacket.Action.CHEST_UNAUTHORIZE, String.valueOf(entry.chestId));
+                    return true;
+                }
+                // [📦 Guardar Aquí]
+                if (isInside(mouseX, mouseY, cardX + 279, cardY + 20, 108, 14)) {
+                    sendAction(C2S_ActionPacket.Action.CHEST_DEPOSIT_TO, String.valueOf(entry.chestId));
+                    return true;
+                }
+            }
         }
 
         // Delete item from queue when clicking [X] in Tab 4

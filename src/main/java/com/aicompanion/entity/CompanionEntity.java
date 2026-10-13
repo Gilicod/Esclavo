@@ -107,20 +107,121 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
 
     private final com.aicompanion.util.TemporaryBlockTracker temporaryBlocks = new com.aicompanion.util.TemporaryBlockTracker();
 
+    public enum ChestCategory {
+        ALL("General", 0xFF55FF55),
+        FOOD("Comida", 0xFFFFAA00),
+        ORES("Minerales", 0xFF55FFFF),
+        WOOD_BUILD("Madera/Bloques", 0xFFAAAAFF),
+        LOOT_EQUIP("Botín/Equipo", 0xFFFF55FF);
+
+        private final String displayName;
+        private final int color;
+
+        ChestCategory(String displayName, int color) {
+            this.displayName = displayName;
+            this.color = color;
+        }
+
+        public String getDisplayName() { return displayName; }
+        public int getColor() { return color; }
+
+        public ChestCategory next() {
+            ChestCategory[] vals = values();
+            return vals[(this.ordinal() + 1) % vals.length];
+        }
+
+        public static ChestCategory fromName(String name) {
+            if (name == null) return ALL;
+            for (ChestCategory c : values()) {
+                if (c.name().equalsIgnoreCase(name)) return c;
+            }
+            return ALL;
+        }
+
+        public static boolean isHealthyFood(ItemStack stack) {
+            if (stack == null || stack.isEmpty()) return false;
+            var item = stack.getItem();
+            if (item == net.minecraft.world.item.Items.ROTTEN_FLESH
+                    || item == net.minecraft.world.item.Items.SPIDER_EYE
+                    || item == net.minecraft.world.item.Items.POISONOUS_POTATO
+                    || item == net.minecraft.world.item.Items.PUFFERFISH
+                    || item == net.minecraft.world.item.Items.CHORUS_FRUIT) {
+                return false;
+            }
+            return stack.isEdible();
+        }
+
+        public boolean matchesItem(ItemStack stack) {
+            if (stack == null || stack.isEmpty()) return false;
+            if (this == ALL) return true;
+            var item = stack.getItem();
+            boolean isFood = isHealthyFood(stack)
+                    || item == net.minecraft.world.item.Items.WHEAT
+                    || item == net.minecraft.world.item.Items.HAY_BLOCK
+                    || item == net.minecraft.world.item.Items.SUGAR_CANE
+                    || item == net.minecraft.world.item.Items.BOWL;
+            if (this == FOOD) return isFood;
+
+            ResourceLocation rl = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item);
+            String path = rl != null ? rl.getPath().toLowerCase() : "";
+            boolean isOreOrIngot = stack.is(net.minecraft.tags.ItemTags.COALS)
+                    || path.contains("ingot") || path.contains("raw_") || path.contains("_ore")
+                    || path.contains("diamond") || path.contains("emerald") || path.contains("redstone")
+                    || path.contains("lapis") || path.contains("quartz") || path.contains("amethyst")
+                    || path.contains("nugget") || path.contains("netherite") || path.contains("coal");
+            if (this == ORES) return isOreOrIngot;
+
+            boolean isWoodOrBuild = stack.is(net.minecraft.tags.ItemTags.LOGS)
+                    || stack.is(net.minecraft.tags.ItemTags.PLANKS)
+                    || (item instanceof net.minecraft.world.item.BlockItem && !isFood && !isOreOrIngot);
+            if (this == WOOD_BUILD) return isWoodOrBuild;
+
+            if (this == LOOT_EQUIP) {
+                return !isFood && !isOreOrIngot && !isWoodOrBuild;
+            }
+            return true;
+        }
+    }
+
     public static class AuthorizedChestEntry {
+        private final int chestId;
         private final BlockPos pos;
         private final ResourceLocation dimension;
         private final UUID authorizedBy;
+        private String customName;
+        private ChestCategory category;
 
-        public AuthorizedChestEntry(BlockPos pos, ResourceLocation dimension, UUID authorizedBy) {
+        public AuthorizedChestEntry(int chestId, BlockPos pos, ResourceLocation dimension, UUID authorizedBy, String customName, ChestCategory category) {
+            this.chestId = Math.max(1, chestId);
             this.pos = pos != null ? pos.immutable() : BlockPos.ZERO;
             this.dimension = dimension != null ? dimension : Level.OVERWORLD.location();
             this.authorizedBy = authorizedBy;
+            this.customName = (customName == null || customName.isBlank()) ? ("Baúl #" + this.chestId) : customName.trim();
+            this.category = category != null ? category : ChestCategory.ALL;
         }
 
+        public AuthorizedChestEntry(BlockPos pos, ResourceLocation dimension, UUID authorizedBy) {
+            this(1, pos, dimension, authorizedBy, "Baúl #1", ChestCategory.ALL);
+        }
+
+        public int getChestId() { return chestId; }
         public BlockPos getPos() { return pos; }
         public ResourceLocation getDimension() { return dimension; }
         public UUID getAuthorizedBy() { return authorizedBy; }
+        public String getCustomName() { return customName; }
+        public void setCustomName(String customName) {
+            if (customName != null && !customName.isBlank()) {
+                this.customName = customName.trim();
+            }
+        }
+        public ChestCategory getCategory() { return category; }
+        public void setCategory(ChestCategory category) {
+            this.category = category != null ? category : ChestCategory.ALL;
+        }
+
+        public String getFullLabel() {
+            return "[#" + chestId + "] " + customName + " (" + category.getDisplayName() + ")";
+        }
 
         @Override
         public boolean equals(Object o) {
@@ -135,21 +236,113 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
         }
     }
 
-    private final java.util.Set<AuthorizedChestEntry> authorizedChests = new java.util.HashSet<>();
+    private final java.util.List<AuthorizedChestEntry> authorizedChests = new java.util.ArrayList<>();
+    private int nextAuthorizedChestId = 1;
+
+    private int allocateNextChestId() {
+        int max = 0;
+        for (AuthorizedChestEntry e : authorizedChests) {
+            if (e.getChestId() > max) max = e.getChestId();
+        }
+        nextAuthorizedChestId = Math.max(nextAuthorizedChestId, max + 1);
+        return nextAuthorizedChestId++;
+    }
+
+    private BlockPos getConnectedChestNeighbor(BlockPos pos, Level level) {
+        if (pos == null || level == null) return null;
+        net.minecraft.world.level.block.state.BlockState state = level.getBlockState(pos);
+        if (state.getBlock() instanceof net.minecraft.world.level.block.ChestBlock) {
+            try {
+                net.minecraft.world.level.block.state.properties.ChestType type = state.getValue(net.minecraft.world.level.block.ChestBlock.TYPE);
+                if (type != net.minecraft.world.level.block.state.properties.ChestType.SINGLE) {
+                    net.minecraft.core.Direction connectedDir = net.minecraft.world.level.block.ChestBlock.getConnectedDirection(state);
+                    return pos.relative(connectedDir);
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    public AuthorizedChestEntry getAuthorizedChestAt(BlockPos pos, Level level) {
+        if (pos == null) return null;
+        ResourceLocation currentDim = level != null ? level.dimension().location() : Level.OVERWORLD.location();
+        BlockPos neighbor = getConnectedChestNeighbor(pos, level);
+        for (AuthorizedChestEntry entry : authorizedChests) {
+            if (entry.getDimension().equals(currentDim)) {
+                if (entry.getPos().equals(pos) || (neighbor != null && entry.getPos().equals(neighbor))) {
+                    return entry;
+                }
+            }
+        }
+        return null;
+    }
+
+    public AuthorizedChestEntry getAuthorizedChestById(int chestId) {
+        for (AuthorizedChestEntry entry : authorizedChests) {
+            if (entry.getChestId() == chestId) return entry;
+        }
+        return null;
+    }
+
+    public AuthorizedChestEntry authorizeChestWithEntry(BlockPos pos, ResourceLocation dimension, UUID playerUUID) {
+        if (pos == null) return null;
+        ResourceLocation dim = dimension != null ? dimension : (this.level() != null ? this.level().dimension().location() : Level.OVERWORLD.location());
+        AuthorizedChestEntry existing = getAuthorizedChestAt(pos, this.level());
+        if (existing != null) {
+            applyWorldChestLabel(existing);
+            return existing;
+        }
+        int id = allocateNextChestId();
+        AuthorizedChestEntry created = new AuthorizedChestEntry(id, pos, dim, playerUUID, "Baúl #" + id, ChestCategory.ALL);
+        authorizedChests.add(created);
+        applyWorldChestLabel(created);
+        return created;
+    }
 
     public void authorizeChest(BlockPos pos, ResourceLocation dimension, UUID playerUUID) {
-        if (pos != null) {
-            authorizedChests.add(new AuthorizedChestEntry(pos, dimension, playerUUID));
-        }
+        authorizeChestWithEntry(pos, dimension, playerUUID);
     }
 
     public void authorizeChest(BlockPos pos) {
         authorizeChest(pos, this.level().dimension().location(), this.getOwnerUUID());
     }
 
+    public void applyWorldChestLabel(AuthorizedChestEntry entry) {
+        if (entry == null || this.level() == null || this.level().isClientSide) return;
+        if (!this.level().dimension().location().equals(entry.getDimension())) return;
+        try {
+            net.minecraft.world.level.block.entity.BlockEntity be = this.level().getBlockEntity(entry.getPos());
+            if (be instanceof net.minecraft.world.level.block.entity.BaseContainerBlockEntity container) {
+                container.setCustomName(Component.literal(entry.getFullLabel()));
+                be.setChanged();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void clearWorldChestLabel(AuthorizedChestEntry entry) {
+        if (entry == null || this.level() == null || this.level().isClientSide) return;
+        if (!this.level().dimension().location().equals(entry.getDimension())) return;
+        try {
+            net.minecraft.world.level.block.entity.BlockEntity be = this.level().getBlockEntity(entry.getPos());
+            if (be instanceof net.minecraft.world.level.block.entity.BaseContainerBlockEntity container) {
+                container.setCustomName(null);
+                be.setChanged();
+            }
+        } catch (Exception ignored) {}
+    }
+
     public void unauthorizeChest(BlockPos pos, ResourceLocation dimension) {
         if (pos != null) {
-            authorizedChests.removeIf(e -> e.getPos().equals(pos) && (dimension == null || e.getDimension().equals(dimension)));
+            BlockPos neighbor = getConnectedChestNeighbor(pos, this.level());
+            java.util.Iterator<AuthorizedChestEntry> it = authorizedChests.iterator();
+            while (it.hasNext()) {
+                AuthorizedChestEntry e = it.next();
+                boolean sameDim = (dimension == null || e.getDimension().equals(dimension));
+                if (sameDim && (e.getPos().equals(pos) || (neighbor != null && e.getPos().equals(neighbor)))) {
+                    clearWorldChestLabel(e);
+                    it.remove();
+                }
+            }
         }
     }
 
@@ -157,23 +350,88 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
         unauthorizeChest(pos, this.level().dimension().location());
     }
 
+    public boolean unauthorizeChestById(int chestId) {
+        java.util.Iterator<AuthorizedChestEntry> it = authorizedChests.iterator();
+        while (it.hasNext()) {
+            AuthorizedChestEntry e = it.next();
+            if (e.getChestId() == chestId) {
+                clearWorldChestLabel(e);
+                it.remove();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean renameAuthorizedChest(int chestId, String newName) {
+        AuthorizedChestEntry entry = getAuthorizedChestById(chestId);
+        if (entry == null || newName == null || newName.isBlank()) return false;
+        String clean = newName.trim();
+        if (clean.length() > 24) clean = clean.substring(0, 24);
+        entry.setCustomName(clean);
+        applyWorldChestLabel(entry);
+        return true;
+    }
+
+    public ChestCategory cycleAuthorizedChestCategory(int chestId) {
+        AuthorizedChestEntry entry = getAuthorizedChestById(chestId);
+        if (entry == null) return null;
+        entry.setCategory(entry.getCategory().next());
+        applyWorldChestLabel(entry);
+        return entry.getCategory();
+    }
+
+    public boolean setPrimaryChestById(int chestId) {
+        AuthorizedChestEntry entry = getAuthorizedChestById(chestId);
+        if (entry == null) return false;
+        ResourceKey<Level> dimKey = ResourceKey.create(Registries.DIMENSION, entry.getDimension());
+        this.setHomePos(entry.getPos(), dimKey);
+        return true;
+    }
+
+    public AuthorizedChestEntry authorizeNearestContainerAround(BlockPos center, Level level, UUID playerUUID, double radius) {
+        if (center == null || level == null) return null;
+        int r = (int) Math.ceil(radius);
+        BlockPos bestPos = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dy = -3; dy <= 3; dy++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    BlockPos p = center.offset(dx, dy, dz);
+                    if (isChestAuthorized(p, level)) continue;
+                    net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(p);
+                    boolean isContainer = (be != null && (be.getCapability(net.minecraftforge.common.capabilities.ForgeCapabilities.ITEM_HANDLER).isPresent() || be instanceof net.minecraft.world.Container))
+                            || level.getBlockState(p).getBlock() instanceof net.minecraft.world.level.block.ChestBlock;
+                    if (isContainer) {
+                        double d = center.distSqr(p);
+                        if (d < bestDist) {
+                            bestDist = d;
+                            bestPos = p.immutable();
+                        }
+                    }
+                }
+            }
+        }
+        if (bestPos != null) {
+            return authorizeChestWithEntry(bestPos, level.dimension().location(), playerUUID);
+        }
+        return null;
+    }
+
     public boolean isChestAuthorized(BlockPos pos, Level level) {
         if (pos == null || level == null) return false;
         // CRITICAL SAFETY MANDATE: Empty list NEVER authorizes chests!
         if (authorizedChests.isEmpty()) return false;
 
-        ResourceLocation currentDim = level.dimension().location();
-        for (AuthorizedChestEntry entry : authorizedChests) {
-            if (entry.getPos().equals(pos) && entry.getDimension().equals(currentDim)) {
-                // Server protection check: if owner is online, verify permission to interact
-                if (level instanceof ServerLevel sl && getOwnerUUID() != null) {
-                    ServerPlayer owner = sl.getServer().getPlayerList().getPlayer(getOwnerUUID());
-                    if (owner != null && !sl.mayInteract(owner, pos)) {
-                        return false;
-                    }
+        AuthorizedChestEntry entry = getAuthorizedChestAt(pos, level);
+        if (entry != null) {
+            if (level instanceof ServerLevel sl && getOwnerUUID() != null) {
+                ServerPlayer owner = sl.getServer().getPlayerList().getPlayer(getOwnerUUID());
+                if (owner != null && !sl.mayInteract(owner, entry.getPos())) {
+                    return false;
                 }
-                return true;
             }
+            return true;
         }
         return false;
     }
@@ -191,7 +449,6 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
 
         for (AuthorizedChestEntry entry : authorizedChests) {
             if (entry.getDimension().equals(currentDim)) {
-                // Ensure container still physically exists
                 net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(entry.getPos());
                 if (be != null && be.getCapability(net.minecraftforge.common.capabilities.ForgeCapabilities.ITEM_HANDLER).isPresent()) {
                     double d = origin.distSqr(entry.getPos());
@@ -205,8 +462,82 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
         return java.util.Optional.ofNullable(best);
     }
 
-    public java.util.Set<AuthorizedChestEntry> getAuthorizedChestEntries() {
-        return java.util.Collections.unmodifiableSet(authorizedChests);
+    /**
+     * Smart multi-chest routing: picks the best authorized chest for a given ItemStack
+     * considering existing stacks of the same item, matching ChestCategory, free space,
+     * primary chest bonus, and distance.
+     */
+    public java.util.Optional<AuthorizedChestEntry> getBestAuthorizedChestForItem(BlockPos origin, Level level, ItemStack stack, double maxRadius) {
+        if (origin == null || level == null || authorizedChests.isEmpty()) return java.util.Optional.empty();
+        ResourceLocation currentDim = level.dimension().location();
+        double maxDistSq = maxRadius * maxRadius;
+        AuthorizedChestEntry bestEntry = null;
+        double bestScore = -1e9;
+
+        for (AuthorizedChestEntry entry : authorizedChests) {
+            if (!entry.getDimension().equals(currentDim)) continue;
+            double distSq = origin.distSqr(entry.getPos());
+            if (distSq > maxDistSq) continue;
+
+            net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(entry.getPos());
+            if (be == null) continue;
+            var cap = be.getCapability(net.minecraftforge.common.capabilities.ForgeCapabilities.ITEM_HANDLER);
+            if (!cap.isPresent()) continue;
+            net.minecraftforge.items.IItemHandler handler = cap.orElse(null);
+            if (handler == null) continue;
+
+            // Check if chest can accept at least 1 item of stack (when stack is provided)
+            boolean hasSameItem = false;
+            boolean canInsert = (stack == null || stack.isEmpty());
+            if (stack != null && !stack.isEmpty()) {
+                ItemStack sim = net.minecraftforge.items.ItemHandlerHelper.insertItemStacked(handler, stack.copyWithCount(1), true);
+                canInsert = sim.isEmpty();
+                if (!canInsert) continue;
+                for (int s = 0; s < handler.getSlots(); s++) {
+                    ItemStack inChest = handler.getStackInSlot(s);
+                    if (!inChest.isEmpty() && inChest.is(stack.getItem())) {
+                        hasSameItem = true;
+                        break;
+                    }
+                }
+            } else {
+                for (int s = 0; s < handler.getSlots(); s++) {
+                    if (handler.getStackInSlot(s).isEmpty()) {
+                        canInsert = true;
+                        break;
+                    }
+                }
+                if (!canInsert) continue;
+            }
+
+            double score = 0.0;
+            if (stack != null && !stack.isEmpty()) {
+                if (entry.getCategory() != ChestCategory.ALL && entry.getCategory().matchesItem(stack)) {
+                    score += 300.0; // Dedicated category chest match!
+                } else if (entry.getCategory() == ChestCategory.ALL) {
+                    score += 50.0;
+                } else {
+                    score -= 150.0; // Avoid putting non-matching items into specialized chests unless no other option
+                }
+                if (hasSameItem) {
+                    score += 220.0; // Stack consolidation bonus
+                }
+            }
+            if (this.homePos != null && this.homePos.equals(entry.getPos())) {
+                score += 65.0; // Primary chest bonus
+            }
+            score -= Math.sqrt(distSq) * 1.5;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestEntry = entry;
+            }
+        }
+        return java.util.Optional.ofNullable(bestEntry);
+    }
+
+    public java.util.List<AuthorizedChestEntry> getAuthorizedChestEntries() {
+        return java.util.Collections.unmodifiableList(authorizedChests);
     }
 
     public java.util.Set<BlockPos> getAuthorizedChests() {
@@ -589,6 +920,8 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
                         this.settings.isAllowCombat(), this.settings.isEnableChunkLoading()
                 );
 
+                this.populateExtendedSyncData(packet);
+
                 com.aicompanion.network.CompanionNetworking.CHANNEL.send(
                         net.minecraftforge.network.PacketDistributor.PLAYER.with(() -> sp),
                         packet
@@ -599,7 +932,149 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
         }
     }
 
+    public void populateExtendedSyncData(com.aicompanion.network.packets.S2C_SyncCompanionDataPacket packet) {
+        if (packet == null) return;
+        java.util.List<com.aicompanion.network.packets.S2C_SyncCompanionDataPacket.AuthorizedChestDTO> dtos = new java.util.ArrayList<>();
+        ResourceLocation curDim = this.level() != null ? this.level().dimension().location() : Level.OVERWORLD.location();
+
+        for (AuthorizedChestEntry e : this.authorizedChests) {
+            int usedSlots = 0;
+            int totalSlots = 27;
+            java.util.List<String> previewParts = new java.util.ArrayList<>();
+            boolean existsInWorld = false;
+
+            if (this.level() != null && curDim.equals(e.getDimension()) && this.level().isLoaded(e.getPos())) {
+                net.minecraft.world.level.block.entity.BlockEntity be = this.level().getBlockEntity(e.getPos());
+                if (be != null) {
+                    var cap = be.getCapability(net.minecraftforge.common.capabilities.ForgeCapabilities.ITEM_HANDLER);
+                    if (cap.isPresent()) {
+                        existsInWorld = true;
+                        net.minecraftforge.items.IItemHandler handler = cap.orElse(null);
+                        if (handler != null) {
+                            totalSlots = handler.getSlots();
+                            for (int i = 0; i < totalSlots; i++) {
+                                ItemStack s = handler.getStackInSlot(i);
+                                if (!s.isEmpty()) {
+                                    usedSlots++;
+                                    if (previewParts.size() < 3) {
+                                        previewParts.add(s.getCount() + "x " + s.getHoverName().getString());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                existsInWorld = true; // In another dimension or unloaded chunk
+            }
+
+            if (existsInWorld) {
+                boolean isPrimary = (this.homePos != null && this.homePos.equals(e.getPos()));
+                String preview = previewParts.isEmpty() ? "Vacío" : String.join(", ", previewParts);
+                dtos.add(new com.aicompanion.network.packets.S2C_SyncCompanionDataPacket.AuthorizedChestDTO(
+                        e.getChestId(),
+                        e.getCustomName(),
+                        e.getCategory().name(),
+                        e.getCategory().getDisplayName(),
+                        e.getPos().getX(),
+                        e.getPos().getY(),
+                        e.getPos().getZ(),
+                        e.getDimension().toString(),
+                        usedSlots,
+                        totalSlots,
+                        isPrimary,
+                        preview
+                ));
+            }
+        }
+
+        String statusBanner = "EN ESPERA: Sin operación de baúl activa";
+        String itemsBanner = "Mochila al día (sin excedentes pendientes)";
+
+        if (this.brain != null && this.brain.getTaskManager() != null) {
+            var curTask = this.brain.getTaskManager().getCurrentTask();
+            if (curTask instanceof com.aicompanion.ai.tasks.DepositTask depTask) {
+                statusBanner = "GUARDANDO AHORA → " + depTask.getTargetChestLabel();
+                itemsBanner = "A guardar: " + depTask.getItemsToDepositSummary();
+            } else if (curTask instanceof com.aicompanion.ai.tasks.WithdrawTask withTask) {
+                statusBanner = "RETIRANDO AHORA → Baúl autorizado";
+                itemsBanner = withTask.getDescription();
+            } else {
+                // Compute preview of what would be stored next and which chest it would go to
+                int foodReserve = this.settings.getFoodStoragePolicy().getReserveLimit();
+                java.util.List<String> surplusList = new java.util.ArrayList<>();
+                AuthorizedChestEntry targetPreview = null;
+                for (int i = 0; i < 36; i++) {
+                    ItemStack s = this.inventoryHandler.getStackInSlot(i);
+                    if (s.isEmpty()) continue;
+                    if (ChestCategory.isHealthyFood(s)) {
+                        if (foodReserve >= s.getCount()) {
+                            foodReserve -= s.getCount();
+                            continue;
+                        }
+                        int ex = s.getCount() - Math.max(0, foodReserve);
+                        foodReserve = 0;
+                        if (ex > 0) {
+                            if (surplusList.size() < 3) surplusList.add(ex + "x " + s.getHoverName().getString());
+                            if (targetPreview == null && this.level() != null) {
+                                targetPreview = getBestAuthorizedChestForItem(this.blockPosition(), this.level(), s, 64.0).orElse(null);
+                            }
+                        }
+                    } else if (com.aicompanion.ai.tasks.DepositTask.isDepositableSlot(this, i, 0)) {
+                        if (surplusList.size() < 3) surplusList.add(s.getCount() + "x " + s.getHoverName().getString());
+                        if (targetPreview == null && this.level() != null) {
+                            targetPreview = getBestAuthorizedChestForItem(this.blockPosition(), this.level(), s, 64.0).orElse(null);
+                        }
+                    }
+                }
+                if (!surplusList.isEmpty()) {
+                    String dest = targetPreview != null
+                            ? ("[#" + targetPreview.getChestId() + "] " + targetPreview.getCustomName())
+                            : (dtos.isEmpty() ? "Sin baúl autorizado" : "Baúl más cercano");
+                    statusBanner = "EN COLA → Próximo destino sugerido: " + dest;
+                    itemsBanner = "Excedentes en mochila: " + String.join(", ", surplusList);
+                }
+            }
+        }
+
+        String buildSummary = "Ninguna construcción activa";
+        if (this.brain != null && this.brain.getActiveBuildProject() != null) {
+            var proj = this.brain.getActiveBuildProject();
+            if (proj.isActive()) {
+                buildSummary = proj.getBlueprintId() + " en (" + proj.getOriginPos().toShortString() + ") — "
+                        + proj.getCurrentBlockIndex() + "/" + proj.getTotalBlocks() + " bloques";
+            }
+        }
+
+        int rememberedCount = 0;
+        if (this.brain != null && this.brain.getMemory() != null && this.brain.getMemory().getWorldModel() != null) {
+            rememberedCount = this.brain.getMemory().getWorldModel().getTotalRememberedCount();
+        }
+        int dangerCount = this.brain != null ? this.brain.getDangerZoneCount() : 0;
+
+        String autonomyMode = "PROACTIVE";
+        String personalityMode = "SERIOUS";
+        try {
+            autonomyMode = com.aicompanion.AICompanionConfig.COMMON.aiAutonomyLevel.get();
+            personalityMode = com.aicompanion.AICompanionConfig.COMMON.aiPersonality.get();
+        } catch (Exception ignored) {}
+
+        packet.authorizedChests = dtos;
+        packet.foodPolicyName = this.settings.getFoodStoragePolicy().name();
+        packet.foodPolicyDisplay = this.settings.getFoodStoragePolicy().getDisplayName();
+        packet.autoDepositPolicyName = this.settings.getAutoDepositPolicy().name();
+        packet.autoDepositPolicyDisplay = this.settings.getAutoDepositPolicy().getDisplayName();
+        packet.logisticsStatusBanner = statusBanner;
+        packet.logisticsItemsBanner = itemsBanner;
+        packet.activeBuildSummary = buildSummary;
+        packet.rememberedDepositsCount = rememberedCount;
+        packet.dangerZonesCount = dangerCount;
+        packet.aiAutonomyMode = autonomyMode;
+        packet.aiPersonalityMode = personalityMode;
+    }
+
     private int idleFollowCooldown = 0;
+    private int autoLogisticsCooldown = 0;
 
     private void handleDefaultIdleBehavior() {
         if (preferredIdleBehavior == DefaultBehavior.FOLLOW) {
@@ -639,6 +1114,7 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
             this.currentState = CompanionState.STAYING;
         }
 
+        if (autoLogisticsCooldown > 0) autoLogisticsCooldown--;
         if (this.tickCount % 60 == 0) {
             handleProactiveAutonomy();
         }
@@ -646,15 +1122,91 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
 
     private void handleProactiveAutonomy() {
         try {
+            // 1. Autonomous Food & Surplus Storage Policy Execution when idle/following
+            if (autoLogisticsCooldown <= 0 && this.brain != null && this.brain.getTaskManager() != null && !this.brain.getTaskManager().isBusy()) {
+                var foodPolicy = this.settings.getFoodStoragePolicy();
+                var depositPolicy = this.settings.getAutoDepositPolicy();
+
+                // 1a. If policy is DELIVER_TO_OWNER and companion has > 16 food, hand surplus directly to owner if nearby
+                if (foodPolicy == CompanionSettings.FoodStoragePolicy.DELIVER_TO_OWNER) {
+                    Player owner = getOwnerPlayer();
+                    if (owner != null && owner.isAlive() && this.distanceToSqr(owner) <= 36.0) {
+                        int foodLeftToKeep = 16;
+                        int givenCount = 0;
+                        for (int i = 0; i < 36; i++) {
+                            ItemStack s = this.inventoryHandler.getStackInSlot(i);
+                            if (s.isEmpty() || !ChestCategory.isHealthyFood(s)) continue;
+                            if (foodLeftToKeep >= s.getCount()) {
+                                foodLeftToKeep -= s.getCount();
+                                continue;
+                            }
+                            int excess = s.getCount() - Math.max(0, foodLeftToKeep);
+                            foodLeftToKeep = 0;
+                            if (excess > 0) {
+                                ItemStack extracted = this.inventoryHandler.extractItem(i, excess, false);
+                                if (!extracted.isEmpty()) {
+                                    if (!owner.getInventory().add(extracted)) {
+                                        this.inventoryHandler.insertItem(i, extracted, false);
+                                    } else {
+                                        givenCount += excess;
+                                    }
+                                }
+                            }
+                        }
+                        if (givenCount > 0) {
+                            tellOwner("Te he entregado " + givenCount + " de comida recolectada (política: entregar excedente).");
+                            autoLogisticsCooldown = 400;
+                        }
+                    }
+                }
+
+                // 1b. Autonomous chest storage when near an authorized chest and policy permits
+                if (autoLogisticsCooldown <= 0 && depositPolicy != CompanionSettings.AutoDepositPolicy.MANUAL_ONLY && !this.authorizedChests.isEmpty()) {
+                    int totalFood = 0;
+                    int depositableSlots = 0;
+                    int foodReserve = foodPolicy.getReserveLimit();
+                    int foodSim = foodReserve;
+                    for (int i = 0; i < 36; i++) {
+                        ItemStack s = this.inventoryHandler.getStackInSlot(i);
+                        if (s.isEmpty()) continue;
+                        if (s.isEdible()) {
+                            totalFood += s.getCount();
+                            if (foodSim < s.getCount()) {
+                                depositableSlots++;
+                                foodSim = 0;
+                            } else {
+                                foodSim -= s.getCount();
+                            }
+                        } else if (com.aicompanion.ai.tasks.DepositTask.isDepositableSlot(this, i, 0)) {
+                            depositableSlots++;
+                        }
+                    }
+
+                    boolean foodNeedsStore = (foodPolicy == CompanionSettings.FoodStoragePolicy.STORE_ALL_FOOD && totalFood > 8)
+                            || (foodPolicy == CompanionSettings.FoodStoragePolicy.RESERVE_16_STORE_REST && totalFood > 24);
+                    boolean idleSurplusNeedsStore = (depositPolicy == CompanionSettings.AutoDepositPolicy.ON_FULL_OR_IDLE && depositableSlots >= 6);
+                    boolean fullNeedsStore = this.inventoryHandler.isCapacityCritical() && depositableSlots > 0;
+
+                    if (foodNeedsStore || idleSurplusNeedsStore || fullNeedsStore) {
+                        var nearChest = getNearestAuthorizedChest(this.blockPosition(), this.level(), 28.0);
+                        if (nearChest.isPresent()) {
+                            autoLogisticsCooldown = 600; // 30s cooldown between autonomous deposits
+                            this.brain.getTaskManager().setTask(new com.aicompanion.ai.tasks.DepositTask(this));
+                            return;
+                        }
+                    }
+                }
+            }
+
             String autonomy = com.aicompanion.AICompanionConfig.COMMON.aiAutonomyLevel.get();
             if (!"PROACTIVE".equalsIgnoreCase(autonomy) && !"SEMI_AUTONOMOUS".equalsIgnoreCase(autonomy)) {
                 return;
             }
-            // 1. Proactive auto-heal if hurt
+            // 2. Proactive auto-heal if hurt
             if (this.getHealth() < this.getMaxHealth() - 4.0F) {
                 tryEatFood();
             }
-            // 2. Proactive illumination: if standing in darkness and block placement allowed, place torch if available
+            // 3. Proactive illumination: if standing in darkness and block placement allowed, place torch if available
             if (this.settings.isAllowBlockPlacement() && this.level() instanceof ServerLevel sl) {
                 BlockPos pos = this.blockPosition();
                 if (sl.getBrightness(net.minecraft.world.level.LightLayer.BLOCK, pos) < 4) {
@@ -1025,10 +1577,14 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
         tag.put("BrainData", brainTag);
         tag.put("TemporaryBlocks", temporaryBlocks.save());
 
+        tag.putInt("NextAuthorizedChestId", nextAuthorizedChestId);
         if (!authorizedChests.isEmpty()) {
             net.minecraft.nbt.ListTag chestList = new net.minecraft.nbt.ListTag();
             for (AuthorizedChestEntry e : authorizedChests) {
                 CompoundTag chestTag = NbtUtils.writeBlockPos(e.getPos());
+                chestTag.putInt("ChestId", e.getChestId());
+                chestTag.putString("CustomName", e.getCustomName());
+                chestTag.putString("Category", e.getCategory().name());
                 chestTag.putString("Dimension", e.getDimension().toString());
                 if (e.getAuthorizedBy() != null) {
                     chestTag.putUUID("AuthorizedBy", e.getAuthorizedBy());
@@ -1092,15 +1648,22 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
         }
 
         this.authorizedChests.clear();
+        this.nextAuthorizedChestId = tag.contains("NextAuthorizedChestId") ? Math.max(1, tag.getInt("NextAuthorizedChestId")) : 1;
         if (tag.contains("AuthorizedChests", net.minecraft.nbt.Tag.TAG_LIST)) {
             net.minecraft.nbt.ListTag list = tag.getList("AuthorizedChests", net.minecraft.nbt.Tag.TAG_COMPOUND);
+            int maxId = 0;
             for (int i = 0; i < list.size(); i++) {
                 CompoundTag cTag = list.getCompound(i);
                 BlockPos p = NbtUtils.readBlockPos(cTag);
                 ResourceLocation dim = cTag.contains("Dimension") ? new ResourceLocation(cTag.getString("Dimension")) : Level.OVERWORLD.location();
                 UUID authBy = cTag.hasUUID("AuthorizedBy") ? cTag.getUUID("AuthorizedBy") : this.ownerUUID;
-                this.authorizedChests.add(new AuthorizedChestEntry(p, dim, authBy));
+                int cId = cTag.contains("ChestId") ? cTag.getInt("ChestId") : (i + 1);
+                if (cId > maxId) maxId = cId;
+                String cName = cTag.contains("CustomName") ? cTag.getString("CustomName") : ("Baúl #" + cId);
+                ChestCategory cat = cTag.contains("Category") ? ChestCategory.fromName(cTag.getString("Category")) : ChestCategory.ALL;
+                this.authorizedChests.add(new AuthorizedChestEntry(cId, p, dim, authBy, cName, cat));
             }
+            this.nextAuthorizedChestId = Math.max(this.nextAuthorizedChestId, maxId + 1);
         }
     }
 
@@ -1152,6 +1715,7 @@ public class CompanionEntity extends PathfinderMob implements MenuProvider {
             // Transfer authorized chests & temporary blocks
             this.authorizedChests.clear();
             this.authorizedChests.addAll(oldCompanion.authorizedChests);
+            this.nextAuthorizedChestId = oldCompanion.nextAuthorizedChestId;
             CompoundTag tbTag = oldCompanion.temporaryBlocks.save();
             this.temporaryBlocks.load(tbTag);
 

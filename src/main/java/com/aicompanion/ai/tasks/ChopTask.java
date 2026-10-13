@@ -296,15 +296,6 @@ public class ChopTask extends CompanionTask {
                   if (this.currentLog != null) {
                      AICompanionMod.LOGGER.info("[ESCLAVO-SPATIAL] ChopTask: Continuing locked tree cluster (Bottom-Up), next log at {}", this.currentLog);
                   } else {
-                     if (this.deferredDropPos != null) {
-                        AICompanionMod.LOGGER.info("[ESCLAVO-DEBUG] ChopTask: Tree finished, collecting all deferred drops around {}", this.deferredDropPos);
-                        this.lastBrokenPos = this.deferredDropPos;
-                        this.deferredDropPos = null;
-                        this.dropPhaseTicks = 0;
-                        this.dropTracker.startGracePeriod(10);
-                        return;
-                     }
-
                      if (this.currentTreeBase != null) {
                         this.replantSaplingAtBase(var24, this.currentTreeBase);
                         this.currentTreeBase = null;
@@ -312,6 +303,15 @@ public class ChopTask extends CompanionTask {
 
                      this.cleanupPlacedScaffolds(var24);
                      if (this.tickDescendPillar()) {
+                        return;
+                     }
+
+                     if (this.deferredDropPos != null) {
+                        AICompanionMod.LOGGER.info("[ESCLAVO-DEBUG] ChopTask: Tree finished, collecting all deferred drops around {}", this.deferredDropPos);
+                        this.lastBrokenPos = this.deferredDropPos;
+                        this.deferredDropPos = null;
+                        this.dropPhaseTicks = 0;
+                        this.dropTracker.startGracePeriod(6);
                         return;
                      }
 
@@ -431,6 +431,9 @@ public class ChopTask extends CompanionTask {
                      AICompanionMod.LOGGER
                         .info("[ESCLAVO-DEBUG] ChopTask: Reached stand spot {} but log {} still out of reach, skipping it", this.lastStandPos, this.currentLog);
                      this.unreachableLogs.add(this.currentLog);
+                     if (this.companion.getMemory() != null) {
+                        this.companion.getMemory().getShortTermMemory().removeClusterBlock(this.currentLog);
+                     }
                      this.currentLog = null;
                      this.standOutOfReachTicks = 0;
                      this.lastStandPos = null;
@@ -452,7 +455,13 @@ public class ChopTask extends CompanionTask {
 
                      if (var17 != -1 && this.companion.getSettings().isAllowBlockPlacement()) {
                         BlockPos var18 = this.companion.blockPosition();
-                        if (var24.getBlockState(var18.above(2)).isAir()) {
+                        BlockPos headAbove = var18.above(2);
+                        BlockState overheadState = var24.getBlockState(headAbove);
+                        if (overheadState.is(BlockTags.LEAVES) || (!overheadState.isAir() && overheadState.canBeReplaced())) {
+                           var24.destroyBlock(headAbove, true, this.companion);
+                           overheadState = var24.getBlockState(headAbove);
+                        }
+                        if (overheadState.isAir()) {
                            this.companion.getNavManager().stop();
                            this.companion.getJumpControl().jump();
                            this.pillarBase = var18.immutable();
@@ -464,6 +473,15 @@ public class ChopTask extends CompanionTask {
                   }
 
                   if (onTrackedPillar && heightDiff > 0) {
+                     AICompanionMod.LOGGER.info(
+                        "[ESCLAVO-DEBUG] ChopTask: High log {} unreachable from pillar at {} (horizSq={}, pillarBlocked={}), skipping log",
+                        this.currentLog, this.companion.blockPosition(), String.format("%.1f", var12), this.isPillarBlocked()
+                     );
+                     this.unreachableLogs.add(this.currentLog.immutable());
+                     if (this.companion.getMemory() != null) {
+                        this.companion.getMemory().getShortTermMemory().removeClusterBlock(this.currentLog);
+                     }
+                     this.currentLog = null;
                      return;
                   }
 
@@ -530,19 +548,26 @@ public class ChopTask extends CompanionTask {
 
                   boolean var19 = BlockBreakHelper.tickBreaking(this.companion, var24, this.currentLog, this.chopTicks, var37);
                   if (var19) {
-                     this.lastBrokenPos = this.currentLog;
-                     boolean var20 = BlockBreakHelper.finishBreaking(this.companion, var24, this.currentLog);
-                     AICompanionMod.LOGGER.info("[ESCLAVO-DEBUG] ChopTask: Finished breaking at {}: success={}", this.currentLog, var20);
+                     BlockPos brokenLogPos = this.currentLog;
+                     boolean var20 = BlockBreakHelper.finishBreaking(this.companion, var24, brokenLogPos);
+                     AICompanionMod.LOGGER.info("[ESCLAVO-DEBUG] ChopTask: Finished breaking at {}: success={}", brokenLogPos, var20);
                      if (var20) {
-                        if (this.companion.getMemory() != null) {
-                           this.companion.getMemory().getShortTermMemory().removeClusterBlock(this.currentLog);
+                        ShortTermMemory var21 = this.companion.getMemory() != null ? this.companion.getMemory().getShortTermMemory() : null;
+                        if (var21 != null) {
+                           var21.removeClusterBlock(brokenLogPos);
                         }
 
                         this.dropPhaseTicks = 0;
-                        ShortTermMemory var21 = this.companion.getMemory() != null ? this.companion.getMemory().getShortTermMemory() : null;
-                        this.deferredDropPos = this.currentLog;
-                        this.lastBrokenPos = this.currentLog;
-                        this.dropTracker.startGracePeriod(4);
+                        if (this.deferredDropPos == null) {
+                           this.deferredDropPos = this.currentTreeBase != null ? this.currentTreeBase : brokenLogPos;
+                        }
+                        boolean hasMoreClusterLogs = var21 != null && var21.hasLockedCluster() && this.selectNextLog(var24, var21) != null;
+                        boolean standingOnPillar = this.companion.getTemporaryBlocks().isStandingOnTracked(this.companion);
+                        if (!hasMoreClusterLogs && !standingOnPillar) {
+                           this.lastBrokenPos = this.deferredDropPos;
+                           this.deferredDropPos = null;
+                           this.dropTracker.startGracePeriod(4);
+                        }
 
                         this.markProgress();
                      }

@@ -55,6 +55,54 @@ public class S2C_SyncCompanionDataPacket {
     public boolean enableChunkLoading;
     public int respawnSecondsRemaining = 0;
 
+    // 1.13.66: Authorized Chests, Live Logistics, Food Policies & Memory Telemetry
+    public static class AuthorizedChestDTO {
+        public int chestId;
+        public String name;
+        public String category;
+        public String categoryDisplay;
+        public int x;
+        public int y;
+        public int z;
+        public String dimension;
+        public int occupiedSlots;
+        public int totalSlots;
+        public boolean isPrimary;
+        public String topItemsSummary;
+
+        public AuthorizedChestDTO() {}
+
+        public AuthorizedChestDTO(int chestId, String name, String category, String categoryDisplay,
+                                  int x, int y, int z, String dimension,
+                                  int occupiedSlots, int totalSlots, boolean isPrimary, String topItemsSummary) {
+            this.chestId = chestId;
+            this.name = name != null ? name : ("Baúl #" + chestId);
+            this.category = category != null ? category : "ALL";
+            this.categoryDisplay = categoryDisplay != null ? categoryDisplay : "General";
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.dimension = dimension != null ? dimension : "minecraft:overworld";
+            this.occupiedSlots = occupiedSlots;
+            this.totalSlots = totalSlots;
+            this.isPrimary = isPrimary;
+            this.topItemsSummary = topItemsSummary != null ? topItemsSummary : "Vacío";
+        }
+    }
+
+    public List<AuthorizedChestDTO> authorizedChests = new ArrayList<>();
+    public String foodPolicyName = "RESERVE_16_STORE_REST";
+    public String foodPolicyDisplay = "Reservar 16 y guardar resto en Baúl";
+    public String autoDepositPolicyName = "ON_FULL_OR_IDLE";
+    public String autoDepositPolicyDisplay = "Al llenarse (≤3) o volver a base";
+    public String logisticsStatusBanner = "Sin operación de baúl activa";
+    public String logisticsItemsBanner = "Sin excedentes pendientes";
+    public String activeBuildSummary = "Ningún proyecto de construcción activo";
+    public int rememberedDepositsCount = 0;
+    public int dangerZonesCount = 0;
+    public String aiAutonomyMode = "PROACTIVE";
+    public String aiPersonalityMode = "LOYAL";
+
     public S2C_SyncCompanionDataPacket withRespawnCountdown(int seconds) {
         this.respawnSecondsRemaining = seconds;
         return this;
@@ -121,9 +169,9 @@ public class S2C_SyncCompanionDataPacket {
             buf.writeUUID(msg.companionUUID);
         }
         buf.writeInt(msg.entityId);
-        buf.writeUtf(msg.customName, 64);
-        buf.writeUtf(msg.currentState, 32);
-        buf.writeUtf(msg.preferredBehavior, 32);
+        buf.writeUtf(msg.customName != null ? msg.customName : "Esclavo", 64);
+        buf.writeUtf(msg.currentState != null ? msg.currentState : "IDLE", 32);
+        buf.writeUtf(msg.preferredBehavior != null ? msg.preferredBehavior : "FOLLOW", 32);
         buf.writeFloat(msg.health);
         buf.writeFloat(msg.maxHealth);
         buf.writeInt(msg.companionLevel);
@@ -135,22 +183,23 @@ public class S2C_SyncCompanionDataPacket {
         buf.writeInt(msg.blocksMined);
         buf.writeInt(msg.mobsKilled);
         buf.writeInt(msg.tasksCompleted);
-        buf.writeUtf(msg.currentTaskDesc, 256);
-        buf.writeUtf(msg.currentTaskProgress, 64);
-        buf.writeUtf(msg.currentTaskType, 64);
-        buf.writeUtf(msg.currentTaskStage, 64);
-        buf.writeUtf(msg.currentTaskSubstate, 128);
-        buf.writeUtf(msg.currentTaskFailureReason, 256);
+        buf.writeUtf(msg.currentTaskDesc != null ? msg.currentTaskDesc : "Ninguna", 256);
+        buf.writeUtf(msg.currentTaskProgress != null ? msg.currentTaskProgress : "", 64);
+        buf.writeUtf(msg.currentTaskType != null ? msg.currentTaskType : "", 64);
+        buf.writeUtf(msg.currentTaskStage != null ? msg.currentTaskStage : "", 64);
+        buf.writeUtf(msg.currentTaskSubstate != null ? msg.currentTaskSubstate : "", 128);
+        buf.writeUtf(msg.currentTaskFailureReason != null ? msg.currentTaskFailureReason : "", 256);
         buf.writeLong(msg.lastProgressTick);
 
-        int qSize = Math.min(msg.queueDescriptions.size(), 20);
+        List<String> qList = msg.queueDescriptions != null ? msg.queueDescriptions : List.of();
+        int qSize = Math.min(qList.size(), 20);
         buf.writeInt(qSize);
         for (int i = 0; i < qSize; i++) {
-            buf.writeUtf(msg.queueDescriptions.get(i), 256);
+            buf.writeUtf(qList.get(i), 256);
         }
 
-        buf.writeUtf(msg.homePos, 64);
-        buf.writeUtf(msg.dimension, 64);
+        buf.writeUtf(msg.homePos != null ? msg.homePos : "No establecida", 64);
+        buf.writeUtf(msg.dimension != null ? msg.dimension : "minecraft:overworld", 64);
         buf.writeInt(msg.posX);
         buf.writeInt(msg.posY);
         buf.writeInt(msg.posZ);
@@ -165,6 +214,38 @@ public class S2C_SyncCompanionDataPacket {
         buf.writeBoolean(msg.allowCombat);
         buf.writeBoolean(msg.enableChunkLoading);
         buf.writeInt(msg.respawnSecondsRemaining);
+
+        // Extended 1.13.66 data
+        List<AuthorizedChestDTO> chests = msg.authorizedChests != null ? msg.authorizedChests : List.of();
+        int cSize = Math.min(chests.size(), 32);
+        buf.writeInt(cSize);
+        for (int i = 0; i < cSize; i++) {
+            AuthorizedChestDTO c = chests.get(i);
+            buf.writeInt(c.chestId);
+            buf.writeUtf(c.name != null ? c.name : ("Baúl #" + c.chestId), 64);
+            buf.writeUtf(c.category != null ? c.category : "ALL", 32);
+            buf.writeUtf(c.categoryDisplay != null ? c.categoryDisplay : "General", 48);
+            buf.writeInt(c.x);
+            buf.writeInt(c.y);
+            buf.writeInt(c.z);
+            buf.writeUtf(c.dimension != null ? c.dimension : "minecraft:overworld", 64);
+            buf.writeInt(c.occupiedSlots);
+            buf.writeInt(c.totalSlots);
+            buf.writeBoolean(c.isPrimary);
+            buf.writeUtf(c.topItemsSummary != null ? c.topItemsSummary : "Vacío", 160);
+        }
+
+        buf.writeUtf(msg.foodPolicyName != null ? msg.foodPolicyName : "RESERVE_16_STORE_REST", 48);
+        buf.writeUtf(msg.foodPolicyDisplay != null ? msg.foodPolicyDisplay : "Reservar 16 y guardar resto en Baúl", 96);
+        buf.writeUtf(msg.autoDepositPolicyName != null ? msg.autoDepositPolicyName : "ON_FULL_OR_IDLE", 48);
+        buf.writeUtf(msg.autoDepositPolicyDisplay != null ? msg.autoDepositPolicyDisplay : "Al llenarse (≤3) o volver a base", 96);
+        buf.writeUtf(msg.logisticsStatusBanner != null ? msg.logisticsStatusBanner : "", 192);
+        buf.writeUtf(msg.logisticsItemsBanner != null ? msg.logisticsItemsBanner : "", 192);
+        buf.writeUtf(msg.activeBuildSummary != null ? msg.activeBuildSummary : "Ningún proyecto de construcción activo", 192);
+        buf.writeInt(msg.rememberedDepositsCount);
+        buf.writeInt(msg.dangerZonesCount);
+        buf.writeUtf(msg.aiAutonomyMode != null ? msg.aiAutonomyMode : "PROACTIVE", 32);
+        buf.writeUtf(msg.aiPersonalityMode != null ? msg.aiPersonalityMode : "LOYAL", 32);
     }
 
     public static S2C_SyncCompanionDataPacket decode(FriendlyByteBuf buf) {
@@ -217,6 +298,37 @@ public class S2C_SyncCompanionDataPacket {
         msg.allowCombat = buf.readBoolean();
         msg.enableChunkLoading = buf.readBoolean();
         msg.respawnSecondsRemaining = buf.readInt();
+
+        if (buf.readableBytes() > 0) {
+            int cSize = buf.readInt();
+            msg.authorizedChests = new ArrayList<>(cSize);
+            for (int i = 0; i < cSize; i++) {
+                int id = buf.readInt();
+                String name = buf.readUtf(64);
+                String cat = buf.readUtf(32);
+                String catDisp = buf.readUtf(48);
+                int cx = buf.readInt();
+                int cy = buf.readInt();
+                int cz = buf.readInt();
+                String cdim = buf.readUtf(64);
+                int occ = buf.readInt();
+                int tot = buf.readInt();
+                boolean prim = buf.readBoolean();
+                String topItems = buf.readUtf(160);
+                msg.authorizedChests.add(new AuthorizedChestDTO(id, name, cat, catDisp, cx, cy, cz, cdim, occ, tot, prim, topItems));
+            }
+            msg.foodPolicyName = buf.readUtf(48);
+            msg.foodPolicyDisplay = buf.readUtf(96);
+            msg.autoDepositPolicyName = buf.readUtf(48);
+            msg.autoDepositPolicyDisplay = buf.readUtf(96);
+            msg.logisticsStatusBanner = buf.readUtf(192);
+            msg.logisticsItemsBanner = buf.readUtf(192);
+            msg.activeBuildSummary = buf.readUtf(192);
+            msg.rememberedDepositsCount = buf.readInt();
+            msg.dangerZonesCount = buf.readInt();
+            msg.aiAutonomyMode = buf.readUtf(32);
+            msg.aiPersonalityMode = buf.readUtf(32);
+        }
         return msg;
     }
 

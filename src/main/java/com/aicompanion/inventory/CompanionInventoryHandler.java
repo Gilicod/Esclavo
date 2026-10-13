@@ -315,7 +315,9 @@ public class CompanionInventoryHandler extends ItemStackHandler {
                 int stored = depositSurplusToChest(companion, nearestChest.get(), isMissionTarget, desiredFree);
                 if (stored > 0) {
                     freedSlots += stored;
-                    actionsSummary.add("Guardé " + stored + " objetos en cofre autorizado");
+                    var entry = companion.getAuthorizedChestAt(nearestChest.get(), companion.level());
+                    String label = entry != null ? entry.getFullLabel() : "cofre autorizado";
+                    actionsSummary.add("Guardé " + stored + " ranuras en " + label);
                     if (getEmptySlotCount() >= desiredFree) {
                         finishFreeSpace(companion, freedSlots, actionsSummary);
                         return freedSlots;
@@ -539,8 +541,11 @@ public class CompanionInventoryHandler extends ItemStackHandler {
                 if (totalCommonBlocks - stack.getCount() < reserveCount) continue;
             }
 
-            // Protect basic survival essentials: food (<= 16), torches (<= 16), logs (<= 16)
-            if (stack.isEdible() && countItem(stack.getItem()) <= 16) continue;
+            // Protect basic survival essentials: food reserve, torches (<= 16), logs (<= 16)
+            int foodReserveLimit = (companion.getSettings() != null && companion.getSettings().getFoodStoragePolicy() != null)
+                    ? companion.getSettings().getFoodStoragePolicy().getReserveLimit()
+                    : 16;
+            if (stack.isEdible() && countItem(stack.getItem()) <= foodReserveLimit) continue;
             if (stack.is(net.minecraft.world.item.Items.TORCH) && countItem(net.minecraft.world.item.Items.TORCH) <= 16) continue;
             if (stack.is(net.minecraft.tags.ItemTags.LOGS) && countItem(stack.getItem()) <= 16) continue;
 

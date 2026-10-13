@@ -31,7 +31,10 @@ public class C2S_ActionPacket {
         MINE, CHOP, KILL, BUILD, CLEAR_QUEUE, REMOVE_QUEUE_INDEX,
         TOGGLE_AUTO_EQUIP, TOGGLE_AUTO_EAT, GOTO, DEPOSIT, WITHDRAW, TOGGLE_CONFIG, REPLAN,
         EQUIP_BEST, TEST_LLM_CONNECTION, SUMMON, DISMISS, OPEN_GUI, SET_NAME,
-        ORGANIZE_INVENTORY
+        ORGANIZE_INVENTORY,
+        CHEST_AUTHORIZE_NEARBY, CHEST_UNAUTHORIZE, CHEST_CYCLE_CATEGORY, CHEST_RENAME,
+        CHEST_SET_PRIMARY, CHEST_DEPOSIT_TO, CYCLE_FOOD_POLICY, CYCLE_AUTODEPOSIT_POLICY,
+        CYCLE_AI_AUTONOMY, CYCLE_AI_PERSONALITY, CLEAR_DANGER_ZONES
     }
 
     private final Action action;
@@ -496,6 +499,137 @@ public class C2S_ActionPacket {
                         });
                     });
                 }
+                case CHEST_AUTHORIZE_NEARBY -> {
+                    var created = companion.authorizeNearestContainerAround(player.blockPosition(), player.level(), player.getUUID(), 8.0);
+                    if (created == null && companion.level() == player.level()) {
+                        created = companion.authorizeNearestContainerAround(companion.blockPosition(), companion.level(), player.getUUID(), 8.0);
+                    }
+                    if (created != null) {
+                        player.sendSystemMessage(
+                                Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                        .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                        .append(Component.literal("¡Autorizado " + created.getFullLabel() + " en " + created.getPos().toShortString() + "!").withStyle(net.minecraft.ChatFormatting.GREEN))
+                        );
+                    } else {
+                        player.sendSystemMessage(
+                                Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                        .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                        .append(Component.literal("No encontré ningún cofre o barril nuevo sin autorizar a menos de 8 bloques.").withStyle(net.minecraft.ChatFormatting.YELLOW))
+                        );
+                    }
+                    syncMenu(player, companion);
+                }
+                case CHEST_UNAUTHORIZE -> {
+                    int chestId = parseInt(msg.payload, -1);
+                    if (chestId > 0 && companion.unauthorizeChestById(chestId)) {
+                        player.sendSystemMessage(
+                                Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                        .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                        .append(Component.literal("Baúl [#" + chestId + "] desautorizado.").withStyle(net.minecraft.ChatFormatting.YELLOW))
+                        );
+                    }
+                    syncMenu(player, companion);
+                }
+                case CHEST_CYCLE_CATEGORY -> {
+                    int chestId = parseInt(msg.payload, -1);
+                    var newCat = companion.cycleAuthorizedChestCategory(chestId);
+                    if (newCat != null) {
+                        var entry = companion.getAuthorizedChestById(chestId);
+                        player.sendSystemMessage(
+                                Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                        .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                        .append(Component.literal("Categoría actualizada: " + (entry != null ? entry.getFullLabel() : newCat.getDisplayName())).withStyle(net.minecraft.ChatFormatting.AQUA))
+                        );
+                    }
+                    syncMenu(player, companion);
+                }
+                case CHEST_RENAME -> {
+                    int sep = msg.payload.indexOf(':');
+                    if (sep > 0) {
+                        int chestId = parseInt(msg.payload.substring(0, sep), -1);
+                        String newName = msg.payload.substring(sep + 1).trim();
+                        if (companion.renameAuthorizedChest(chestId, newName)) {
+                            var entry = companion.getAuthorizedChestById(chestId);
+                            player.sendSystemMessage(
+                                    Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                            .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                            .append(Component.literal("Baúl renombrado a: " + (entry != null ? entry.getFullLabel() : newName)).withStyle(net.minecraft.ChatFormatting.GREEN))
+                            );
+                        }
+                    }
+                    syncMenu(player, companion);
+                }
+                case CHEST_SET_PRIMARY -> {
+                    int chestId = parseInt(msg.payload, -1);
+                    if (companion.setPrimaryChestById(chestId)) {
+                        var entry = companion.getAuthorizedChestById(chestId);
+                        player.sendSystemMessage(
+                                Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                        .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                        .append(Component.literal("Almacén principal (★) fijado en " + (entry != null ? entry.getFullLabel() : ("#" + chestId)) + ".").withStyle(net.minecraft.ChatFormatting.GREEN))
+                        );
+                    }
+                    syncMenu(player, companion);
+                }
+                case CHEST_DEPOSIT_TO -> {
+                    int chestId = parseInt(msg.payload, -1);
+                    var entry = companion.getAuthorizedChestById(chestId);
+                    if (entry != null) {
+                        companion.getCompanionBrain().getTaskManager().setTask(new DepositTask(companion, chestId));
+                        player.sendSystemMessage(
+                                Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                        .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                        .append(Component.literal("Dirigiéndome a guardar objetos en " + entry.getFullLabel() + ".").withStyle(net.minecraft.ChatFormatting.GREEN))
+                        );
+                    }
+                    syncMenu(player, companion);
+                }
+                case CYCLE_FOOD_POLICY -> {
+                    settings.setFoodStoragePolicy(settings.getFoodStoragePolicy().next());
+                    syncMenu(player, companion);
+                }
+                case CYCLE_AUTODEPOSIT_POLICY -> {
+                    settings.setAutoDepositPolicy(settings.getAutoDepositPolicy().next());
+                    syncMenu(player, companion);
+                }
+                case CYCLE_AI_AUTONOMY -> {
+                    try {
+                        String cur = com.aicompanion.AICompanionConfig.COMMON.aiAutonomyLevel.get();
+                        String next = switch (cur != null ? cur.toUpperCase() : "PROACTIVE") {
+                            case "OBEDIENT" -> "SEMI_AUTONOMOUS";
+                            case "SEMI_AUTONOMOUS" -> "PROACTIVE";
+                            default -> "OBEDIENT";
+                        };
+                        com.aicompanion.AICompanionConfig.COMMON.aiAutonomyLevel.set(next);
+                    } catch (Exception ignored) {}
+                    syncMenu(player, companion);
+                }
+                case CYCLE_AI_PERSONALITY -> {
+                    try {
+                        String cur = com.aicompanion.AICompanionConfig.COMMON.aiPersonality.get();
+                        String next = switch (cur != null ? cur.toUpperCase() : "SERIOUS") {
+                            case "SERIOUS" -> "FRIENDLY";
+                            case "FRIENDLY" -> "ROBOTIC";
+                            default -> "SERIOUS";
+                        };
+                        com.aicompanion.AICompanionConfig.COMMON.aiPersonality.set(next);
+                    } catch (Exception ignored) {}
+                    syncMenu(player, companion);
+                }
+                case CLEAR_DANGER_ZONES -> {
+                    if (companion.getCompanionBrain() != null) {
+                        companion.getCompanionBrain().clearDangerZones();
+                        if (companion.getCompanionBrain().getMemory() != null && companion.getCompanionBrain().getMemory().getWorldModel() != null) {
+                            companion.getCompanionBrain().getMemory().getWorldModel().clearResourceDeposits();
+                        }
+                    }
+                    player.sendSystemMessage(
+                            Component.literal("[" + companion.getCustomCompanionName() + "] ")
+                                    .withStyle(net.minecraft.ChatFormatting.GOLD)
+                                    .append(Component.literal("Zonas de peligro y caché temporal de vetas reiniciadas.").withStyle(net.minecraft.ChatFormatting.GREEN))
+                    );
+                    syncMenu(player, companion);
+                }
             }
 
             // Save persistent data
@@ -507,6 +641,8 @@ public class C2S_ActionPacket {
     private static void syncMenu(ServerPlayer player, CompanionEntity companion) {
         if (player.containerMenu instanceof CompanionMenu menu) {
             menu.syncDataToClient(player);
+        } else if (companion != null) {
+            companion.syncToOwner();
         }
     }
 

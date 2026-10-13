@@ -139,6 +139,17 @@ public class CompanionWorldModel {
         resourceDeposits.clear();
     }
 
+    public int getTotalRememberedCount() {
+        int count = knownLocations.size() + dimensionalPortals.size();
+        for (Map<BlockPos, POIRecord> map : poisByType.values()) {
+            count += map.size();
+        }
+        for (Map<BlockPos, ResourceDepositRecord> map : resourceDeposits.values()) {
+            count += map.size();
+        }
+        return count;
+    }
+
     public Optional<BlockPos> findClosestResourceDeposit(Block targetBlock, BlockPos origin, double maxRadius) {
         if (origin == null || targetBlock == null) return Optional.empty();
         return findClosestResourceDeposit(BuiltInRegistries.BLOCK.getKey(targetBlock), origin, maxRadius);
